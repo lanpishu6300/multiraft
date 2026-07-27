@@ -2,6 +2,8 @@
 
 **English：** [en/Getting-Started.md](../en/Getting-Started.md)
 
+产品定位与热路径 / sync=1 技术方案见 **[技术亮点](../../spotlight/2026-07-hotpath-sync1.zh-CN.md)**。本文是最短上手清单。
+
 ## 前置
 
 - Rust（建议与姊妹仓对齐的较新 stable；见 `rustc --version`）

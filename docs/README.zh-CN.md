@@ -8,6 +8,7 @@
 
 | Doc (EN) | 中文 | 读者 |
 |----------|------|------|
+| [spotlight/2026-07-hotpath-sync1.md](./spotlight/2026-07-hotpath-sync1.md) | [spotlight/2026-07-hotpath-sync1.zh-CN.md](./spotlight/2026-07-hotpath-sync1.zh-CN.md) | 技术亮点 — 热路径与 sync=1 |
 | [wiki/en/Home.md](./wiki/en/Home.md) | [wiki/zh/Home.md](./wiki/zh/Home.md) | Wiki（入门 / FAQ / 路线图） |
 | [../README.md](../README.md) | [../README.zh-CN.md](../README.zh-CN.md) | 仓库 README |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md) | 贡献者 — crate 边界与契约 |
@@ -22,6 +23,17 @@
 | [2026-07-18-multiraft-design.md](./specs/2026-07-18-multiraft-design.md) | [2026-07-18-multiraft-design.zh-CN.md](./specs/2026-07-18-multiraft-design.zh-CN.md) | 撮合高可用薄 Multi-Raft |
 | [2026-07-20-standby-async-snapshot-design.md](./specs/2026-07-20-standby-async-snapshot-design.md) | [2026-07-20-standby-async-snapshot-design.zh-CN.md](./specs/2026-07-20-standby-async-snapshot-design.zh-CN.md) | Standby 异步快照（对齐 Aeron） |
 | [2026-07-20-aeron-standby-parity-design.md](./specs/2026-07-20-aeron-standby-parity-design.md) | [2026-07-20-aeron-standby-parity-design.zh-CN.md](./specs/2026-07-20-aeron-standby-parity-design.zh-CN.md) | Aeron Standby Premium 对等（P0–P3） |
+| [2026-07-21-aeron-inspired-hotpath-design.md](./specs/2026-07-21-aeron-inspired-hotpath-design.md) | [2026-07-21-aeron-inspired-hotpath-design.zh-CN.md](./specs/2026-07-21-aeron-inspired-hotpath-design.zh-CN.md) | 热路径 + 设计理念（M1–M4） |
+| [2026-07-22-sync1-disk-pipeline-merge.md](./specs/2026-07-22-sync1-disk-pipeline-merge.md) | [2026-07-22-sync1-disk-pipeline-merge.zh-CN.md](./specs/2026-07-22-sync1-disk-pipeline-merge.zh-CN.md) | M4：深流水线 / sync=1 组提交 / 复制批与拐点 |
+| [2026-07-22-aeron-next-borrow.md](./specs/2026-07-22-aeron-next-borrow.md) | [2026-07-22-aeron-next-borrow.zh-CN.md](./specs/2026-07-22-aeron-next-borrow.zh-CN.md) | 下一阶段 Aeron 借鉴 backlog（N1–N3） |
+
+## 对照 / 定位
+
+| Doc (EN) | 中文 | 主题 |
+|----------|------|------|
+| [compare/aeron-commercial.md](./compare/aeron-commercial.md) | [compare/aeron-commercial.zh-CN.md](./compare/aeron-commercial.zh-CN.md) | multiraft vs Aeron Cluster / Standby Premium |
+| [perf.md](./perf.md) | [perf.zh-CN.md](./perf.zh-CN.md) | 实测 TPS 上限与压测配方 |
+| [perf-single-symbol.md](./perf-single-symbol.md) | [perf-single-symbol.zh-CN.md](./perf-single-symbol.zh-CN.md) | 单币对推荐配置与 sync=1 拐点 |
 
 ## 计划（plans）
 

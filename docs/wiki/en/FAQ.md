@@ -2,6 +2,14 @@
 
 **中文：** [zh/FAQ.md](../zh/FAQ.md)
 
+### What config for single-symbol sync=1 matching?
+
+See **[single-symbol recommended config & benches](../../perf-single-symbol.md)** (pe 8k–12k, `192×256`, etc.). Implementation detail: [M4](../../specs/2026-07-22-sync1-disk-pipeline-merge.md).
+
+### Where is the hot path / sync=1 summary?
+
+See **[highlights: hot path & sync=1](../../spotlight/2026-07-hotpath-sync1.md)**. Implementation detail: [M4](../../specs/2026-07-22-sync1-disk-pipeline-merge.md).
+
 ### Why not SofaJRaft / TiKV raftstore?
 
 No official Rust SofaJRaft. TiKV `raftstore` is thick (Region / PD / split);

@@ -8,6 +8,7 @@
 
 | 页面 | 说明 |
 |------|------|
+| [**技术亮点：热路径与 sync=1**](../../spotlight/2026-07-hotpath-sync1.zh-CN.md) | 定位、实测与方案要点 |
 | [快速开始](./Getting-Started.md) | 克隆、构建、Demo、验收 |
 | [架构](./Architecture.md) | Crate 边界、拓扑、一致性契约 |
 | [一致性与测试](./Consistency.md) | Contract、porcupine、Jepsen、chaos |
@@ -17,6 +18,8 @@
 
 ## 快捷链接
 
+- [技术亮点](../../spotlight/2026-07-hotpath-sync1.zh-CN.md) · [English](../../spotlight/2026-07-hotpath-sync1.md)
+- [单币对推荐配置](../../perf-single-symbol.zh-CN.md) · [English](../../perf-single-symbol.md)
 - [架构笔记](../../ARCHITECTURE.zh-CN.md) · [English](../../ARCHITECTURE.md)
 - [设计规格](../../specs/2026-07-18-multiraft-design.zh-CN.md) · [English](../../specs/2026-07-18-multiraft-design.md)
 - [Jepsen / 一致性](../../jepsen.zh-CN.md) · [English](../../jepsen.md)

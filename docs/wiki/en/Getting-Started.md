@@ -2,6 +2,8 @@
 
 **中文：** [zh/Getting-Started.md](../zh/Getting-Started.md)
 
+For positioning and the hot path / sync=1 design summary, see **[highlights](../../spotlight/2026-07-hotpath-sync1.md)**. This page is the shortest bootstrap checklist.
+
 ## Prerequisites
 
 - Rust (recent stable; check `rustc --version`)

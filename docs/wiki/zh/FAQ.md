@@ -2,6 +2,14 @@
 
 **English：** [en/FAQ.md](../en/FAQ.md)
 
+### 单币对 sync=1 该用什么配置？
+
+见 **[单币对推荐配置与压测](../../perf-single-symbol.zh-CN.md)**（pe 8k–12k、`192×256` 等）。实现细节见 [M4](../../specs/2026-07-22-sync1-disk-pipeline-merge.zh-CN.md)。
+
+### 热路径 / sync=1 的概述在哪？
+
+见 **[技术亮点：热路径与 sync=1](../../spotlight/2026-07-hotpath-sync1.zh-CN.md)**。实现细节见 [M4 规格](../../specs/2026-07-22-sync1-disk-pipeline-merge.zh-CN.md)。
+
 ### 为什么不直接用 SofaJRaft / TiKV raftstore？
 
 Rust 无官方 SofaJRaft；TiKV `raftstore` 厚在 Region / PD / split，撮合按稳定 symbol 分片用不上。本库只做薄 Multi-Raft（共享连接 + 多 Group）。
