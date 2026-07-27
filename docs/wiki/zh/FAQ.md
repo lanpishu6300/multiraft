@@ -6,6 +6,10 @@
 
 见 **[单币对推荐配置与压测](../../perf-single-symbol.zh-CN.md)**（pe 8k–12k、`192×256` 等）。实现细节见 [M4](../../specs/2026-07-22-sync1-disk-pipeline-merge.zh-CN.md)。
 
+### 多 Group 会抬高总吞吐吗？
+
+file（尤其 sync=1）下通常 **不会**。Group 数增加时合计墙钟 TPS 往往下降 — 见 **[多 Group 压测](../../perf-multi-group.zh-CN.md)**。多 Group 价值在隔离 / 多币对。
+
 ### 热路径 / sync=1 的概述在哪？
 
 见 **[技术亮点：热路径与 sync=1](../../spotlight/2026-07-hotpath-sync1.zh-CN.md)**。实现细节见 [M4 规格](../../specs/2026-07-22-sync1-disk-pipeline-merge.zh-CN.md)。

@@ -34,6 +34,7 @@ Self-contained docs for the **multiraft** GitHub repository (no links outside th
 | [compare/aeron-commercial.md](./compare/aeron-commercial.md) | [compare/aeron-commercial.zh-CN.md](./compare/aeron-commercial.zh-CN.md) | multiraft vs Aeron Cluster / Standby Premium |
 | [perf.md](./perf.md) | [perf.zh-CN.md](./perf.zh-CN.md) | Measured TPS ceilings & bench recipes |
 | [perf-single-symbol.md](./perf-single-symbol.md) | [perf-single-symbol.zh-CN.md](./perf-single-symbol.zh-CN.md) | Single-symbol recommended config & sync=1 knees |
+| [perf-multi-group.md](./perf-multi-group.md) | [perf-multi-group.zh-CN.md](./perf-multi-group.zh-CN.md) | Multi-group wall TPS (mem / sync=0 / sync=1) |
 
 ## Plans
 

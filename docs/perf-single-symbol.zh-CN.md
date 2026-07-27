@@ -4,9 +4,9 @@
 
 **日期：** 2026-07-27  
 **范围：** 单 Raft Group（`--groups 1`）、文件日志、`sync_level = 1`、进程内 3 voter  
-**相关：** [perf.zh-CN.md](./perf.zh-CN.md) · [M4 sync=1](./specs/2026-07-22-sync1-disk-pipeline-merge.zh-CN.md) · [热路径亮点](./spotlight/2026-07-hotpath-sync1.zh-CN.md)
+**相关：** [perf.zh-CN.md](./perf.zh-CN.md) · [多 Group](./perf-multi-group.zh-CN.md) · [M4 sync=1](./specs/2026-07-22-sync1-disk-pipeline-merge.zh-CN.md) · [热路径亮点](./spotlight/2026-07-hotpath-sync1.zh-CN.md)
 
-本文针对 **一个交易对对应一个 Raft Group**。多 Group 用于隔离与扩展形态，不能指望靠多 Group 自动抬高单币对墙钟吞吐。
+本文针对 **一个交易对对应一个 Raft Group**。多 Group 用于隔离与扩展形态，不能指望靠多 Group 自动抬高单币对墙钟吞吐 — 实测表见 [perf-multi-group.zh-CN.md](./perf-multi-group.zh-CN.md)。
 
 ---
 

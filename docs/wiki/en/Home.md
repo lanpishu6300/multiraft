@@ -20,6 +20,7 @@ Welcome. This in-repo wiki mirrors what many projects put on GitHub Wiki, and st
 
 - [Highlights](../../spotlight/2026-07-hotpath-sync1.md) · [中文](../../spotlight/2026-07-hotpath-sync1.zh-CN.md)
 - [Single-symbol config](../../perf-single-symbol.md) · [中文](../../perf-single-symbol.zh-CN.md)
+- [Multi-group benches](../../perf-multi-group.md) · [中文](../../perf-multi-group.zh-CN.md)
 - [Architecture notes](../../ARCHITECTURE.md) · [中文](../../ARCHITECTURE.zh-CN.md)
 - [Design spec](../../specs/2026-07-18-multiraft-design.md) · [中文](../../specs/2026-07-18-multiraft-design.zh-CN.md)
 - [Jepsen / consistency](../../jepsen.md) · [中文](../../jepsen.zh-CN.md)

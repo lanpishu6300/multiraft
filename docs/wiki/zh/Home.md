@@ -20,6 +20,7 @@
 
 - [技术亮点](../../spotlight/2026-07-hotpath-sync1.zh-CN.md) · [English](../../spotlight/2026-07-hotpath-sync1.md)
 - [单币对推荐配置](../../perf-single-symbol.zh-CN.md) · [English](../../perf-single-symbol.md)
+- [多 Group 压测](../../perf-multi-group.zh-CN.md) · [English](../../perf-multi-group.md)
 - [架构笔记](../../ARCHITECTURE.zh-CN.md) · [English](../../ARCHITECTURE.md)
 - [设计规格](../../specs/2026-07-18-multiraft-design.zh-CN.md) · [English](../../specs/2026-07-18-multiraft-design.md)
 - [Jepsen / 一致性](../../jepsen.zh-CN.md) · [English](../../jepsen.md)

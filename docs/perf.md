@@ -221,6 +221,12 @@ Harness: in-process 3 voters; with `concurrency>1` each proposer is **sticky** t
 | file sync=0 | 1 node | 32×16 | **~830k** | No quorum — local append is much faster |
 | file sync=0 | 8 | 8×16 | ~47k | Many `log.bin` contend for disk |
 | file sync=0 | 16 | 16×16 | ~46k | Same |
+| file sync=1 pe=12288 | 1 | 192×256 | **~195k** | Median of 3 (2026-07-27) |
+| file sync=1 pe=12288 | 4 | 192×256 | ~143k | ~0.73× of groups=1 |
+| file sync=1 pe=12288 | 8 | 192×256 | ~79k | ~0.40× |
+| file sync=1 pe=12288 | 16 | 192×256 | ~7k | Collapse — do not pack this densely |
+
+Full multi-group tables and guidance: [perf-multi-group.md](./perf-multi-group.md).
 
 **Why file sync=0 is not “millions like page cache”:** raw buffered writes on this machine are ~5M+/s; Raft still pays per-entry openraft + **3-replica** append + quorum RTT + `FileLogStore` mutex. Prefer higher `conc×batch` for wall TPS.
 
@@ -277,7 +283,8 @@ cargo run -p multiraft-demo --release -- --mode bench --nodes 3 --groups 1 \
 ```
 
 Full design / philosophy: [M4 spec](./specs/2026-07-22-sync1-disk-pipeline-merge.md).  
-Single-symbol recommended config and 2026-07-27 knees: [perf-single-symbol.md](./perf-single-symbol.md).
+Single-symbol recommended config and 2026-07-27 knees: [perf-single-symbol.md](./perf-single-symbol.md).  
+Multi-group (mem / sync=0 / sync=1): [perf-multi-group.md](./perf-multi-group.md).
 
 Default openraft `max_payload_entries` is **300** — that was the hidden replication-batch ceiling. Raising it lets followers apply fatter AppendEntries → fewer `fdatasync`s per entry (group-commit on the replication path).
 

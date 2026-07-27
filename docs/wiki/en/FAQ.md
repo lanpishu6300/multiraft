@@ -6,6 +6,10 @@
 
 See **[single-symbol recommended config & benches](../../perf-single-symbol.md)** (pe 8k–12k, `192×256`, etc.). Implementation detail: [M4](../../specs/2026-07-22-sync1-disk-pipeline-merge.md).
 
+### Does more groups raise total TPS?
+
+Usually **no** on file (especially sync=1). Aggregate wall TPS falls as group count rises — see **[multi-group benches](../../perf-multi-group.md)**. Multi-group is for isolation / many symbols.
+
 ### Where is the hot path / sync=1 summary?
 
 See **[highlights: hot path & sync=1](../../spotlight/2026-07-hotpath-sync1.md)**. Implementation detail: [M4](../../specs/2026-07-22-sync1-disk-pipeline-merge.md).

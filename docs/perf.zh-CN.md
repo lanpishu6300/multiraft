@@ -219,6 +219,12 @@ Harness：进程内 3 voter；`concurrency>1` 时每个 proposer **粘性绑定*
 | file sync=0 | 1 node | 32×16 | **~830k** | 无 quorum — 本机 append 快得多 |
 | file sync=0 | 8 | 8×16 | ~47k | 多 `log.bin` 抢盘，总 TPS **下降** |
 | file sync=0 | 16 | 16×16 | ~46k | 同上 |
+| file sync=1 pe=12288 | 1 | 192×256 | **~19.5 万** | 3 次中位（2026-07-27） |
+| file sync=1 pe=12288 | 4 | 192×256 | ~14.3 万 | 约 groups=1 的 0.73× |
+| file sync=1 pe=12288 | 8 | 192×256 | ~7.9 万 | ~0.40× |
+| file sync=1 pe=12288 | 16 | 192×256 | ~0.7 万 | 塌缩 — 勿如此密堆 |
+
+多 Group 完整表与建议：[perf-multi-group.zh-CN.md](./perf-multi-group.zh-CN.md)。
 
 **为何 file sync=0 不是「page cache 那种百万级」：** 本机纯缓冲写 ~500 万+/s；Raft 仍付每条 openraft + **3 副本** append + quorum RTT + `FileLogStore` mutex。抬墙钟优先加大 `conc×batch`。
 
@@ -274,6 +280,7 @@ cargo run -p multiraft-demo --release -- --mode bench --nodes 3 --groups 1 \
 ```
 
 完整理念与实现：[M4 规格](./specs/2026-07-22-sync1-disk-pipeline-merge.zh-CN.md)。  
-单币对推荐配置与 2026-07-27 拐点表：[perf-single-symbol.zh-CN.md](./perf-single-symbol.zh-CN.md)。
+单币对推荐配置与 2026-07-27 拐点表：[perf-single-symbol.zh-CN.md](./perf-single-symbol.zh-CN.md)。  
+多 Group（mem / sync=0 / sync=1）：[perf-multi-group.zh-CN.md](./perf-multi-group.zh-CN.md)。
 
 **结论：** mem 下多 Group **不等于**自动更高总吞吐——单 Group 深流水线往往更高；多 Group 价值在隔离与扩展。file 下多 Group 更容易抢盘，墙钟 TPS 可能明显变差。

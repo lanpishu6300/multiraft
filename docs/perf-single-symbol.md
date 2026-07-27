@@ -4,9 +4,9 @@
 
 **Date:** 2026-07-27  
 **Scope:** one Raft group (`--groups 1`), file log, `sync_level = 1`, in-process 3 voters  
-**Related:** [perf.md](./perf.md) · [M4 sync=1](./specs/2026-07-22-sync1-disk-pipeline-merge.md) · [hotpath highlights](./spotlight/2026-07-hotpath-sync1.md)
+**Related:** [perf.md](./perf.md) · [multi-group](./perf-multi-group.md) · [M4 sync=1](./specs/2026-07-22-sync1-disk-pipeline-merge.md) · [hotpath highlights](./spotlight/2026-07-hotpath-sync1.md)
 
-This note is for **one trading symbol per Raft group**. Multi-group layout is for isolation / scale-out shape, not a free TPS multiplier on a single symbol.
+This note is for **one trading symbol per Raft group**. Multi-group layout is for isolation / scale-out shape, not a free TPS multiplier on a single symbol — measured tables: [perf-multi-group.md](./perf-multi-group.md).
 
 ---
 
