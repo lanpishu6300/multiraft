@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::ops::RangeBounds;
 use std::path::Path;
 use std::path::PathBuf;
@@ -222,11 +223,41 @@ where
     Ok(map)
 }
 
+/// Write `value` to `path` so that a crash leaves either the previous file or
+/// the new one, and so the new content survives power loss.
+///
+/// `fs::write` + `fs::rename` gives atomicity but not durability: both return
+/// once the data is in the OS page cache, and Linux may hold it there for tens
+/// of seconds. Openraft requires the vote to be on disk before `save_vote`
+/// returns and the entries to be on disk before `IOFlushed::io_completed` is
+/// called, so the temp file is fsynced before the rename and the directory is
+/// fsynced after it — a rename is itself a directory update, and without that
+/// second fsync the renamed file can be missing entirely after a crash.
 fn atomic_write_json<T: Serialize>(path: PathBuf, value: &T) -> io::Result<()> {
     let bytes = serde_json::to_vec(value).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, &bytes)?;
+
+    let mut file = fs::File::create(&tmp)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    drop(file);
+
     fs::rename(&tmp, &path)?;
+
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    sync_dir(dir)
+}
+
+/// Flush the directory entry created by a rename.
+#[cfg(unix)]
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    fs::File::open(dir)?.sync_all()
+}
+
+/// Windows has no fsync-a-directory equivalent; `MoveFileEx` is durable enough
+/// there once the file itself has been flushed.
+#[cfg(not(unix))]
+fn sync_dir(_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
