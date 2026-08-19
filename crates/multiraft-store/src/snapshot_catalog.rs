@@ -148,7 +148,8 @@ impl SnapshotCatalog {
         Ok(None)
     }
 
-    fn list(&self, group: GroupId) -> io::Result<Vec<CatalogEntry>> {
+    /// All durable snapshot entries for `group`.
+    pub fn list(&self, group: GroupId) -> io::Result<Vec<CatalogEntry>> {
         let group_dir = self.root.join(group.to_string());
         if !group_dir.exists() {
             return Ok(Vec::new());

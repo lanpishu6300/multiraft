@@ -6,6 +6,11 @@ members = [
   "crates/multiraft-net",
   "crates/multiraft-core",
   "crates/multiraft-demo",
+  "crates/multiraft-plugin-metrics",
+  "crates/multiraft-plugin-archive",
+  "crates/multiraft-plugin-transition",
+  "crates/multiraft-plugin-auth",
+  "crates/multiraft-plugin-ops",
 ]
 
 [workspace.package]
@@ -14,7 +19,7 @@ edition = "2021"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-openraft = { version = "=0.10.0-alpha.30", default-features = false, features = ["serde", "type-alias", "tokio-rt"] }
+openraft = { version = "=0.10.0-alpha.30", default-features = false, features = ["serde", "type-alias", "tokio-rt", "runtime-stats"] }
 openraft-multi = { version = "=0.10.0-alpha.30" }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"] }

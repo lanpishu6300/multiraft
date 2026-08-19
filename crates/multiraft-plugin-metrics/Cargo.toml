@@ -1,0 +1,13 @@
+[package]
+name = "multiraft-plugin-metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Segmented propose latency metrics plugin for multiraft"
+
+[dependencies]
+multiraft-core = { path = "../multiraft-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]

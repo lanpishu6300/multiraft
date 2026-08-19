@@ -29,7 +29,14 @@ tonic-build = { workspace = true }
 [dev-dependencies]
 axum = "0.7"
 bincode = { workspace = true }
+multiraft-plugin-metrics = { path = "../multiraft-plugin-metrics" }
+multiraft-plugin-archive = { path = "../multiraft-plugin-archive" }
+multiraft-plugin-transition = { path = "../multiraft-plugin-transition" }
+multiraft-plugin-auth = { path = "../multiraft-plugin-auth" }
+multiraft-plugin-ops = { path = "../multiraft-plugin-ops" }
+multiraft-store = { path = "../multiraft-store" }
 porcupine-rs = "0.3"
 sha2 = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
 tempfile = "3"
 tracing-subscriber = { workspace = true }

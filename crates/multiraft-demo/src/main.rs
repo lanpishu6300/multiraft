@@ -13,6 +13,9 @@ use std::time::Duration;
 use std::time::Instant;
 
 use axum::extract::Path;
+use axum::extract::Request;
+use axum::middleware::from_fn_with_state;
+use axum::middleware::Next;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
@@ -28,11 +31,15 @@ use multiraft_core::ClusterConfig;
 use multiraft_core::FileLogSyncLevel;
 use multiraft_core::MultiRaftError;
 use multiraft_core::NodeRole;
+use multiraft_core::PluginRegistry;
 use multiraft_core::SnapshotAdvertisement;
 use multiraft_core::SnapshotMode;
 use multiraft_fsm::CounterFsm;
 use multiraft_net::wait_for_leader;
 use multiraft_net::MultiRaft;
+use multiraft_plugin_archive::CatalogArchive;
+use multiraft_plugin_ops::premium_registry;
+use multiraft_store::SnapshotCatalog;
 use serde::Deserialize;
 use serde::Serialize;
 use tracing::info;
@@ -169,6 +176,30 @@ struct Args {
     /// openraft `max_append_entries` storage merge cap (`0` = default 4096).
     #[arg(long, default_value_t = 0)]
     bench_max_append_entries: u64,
+
+    /// Enable Premium plugin bundle (metrics + transition + auth; archive when catalog exists).
+    #[arg(long, default_value_t = false)]
+    premium_plugins: bool,
+
+    /// Admin Bearer token when `--premium-plugins` (else `MULTIRAFT_ADMIN_TOKEN` env).
+    #[arg(long)]
+    admin_token: Option<String>,
+
+    /// Auto-promote lagging standbys when `--premium-plugins` (requires leader replication metrics).
+    #[arg(long, default_value_t = false)]
+    transition_auto: bool,
+
+    /// Lag index threshold for `--transition-auto` (default 100).
+    #[arg(long, default_value_t = 100)]
+    transition_lag_threshold: u64,
+
+    /// Poll interval for transition policy (ms).
+    #[arg(long, default_value_t = 2000)]
+    transition_poll_ms: u64,
+
+    /// `--mode bench`: include plugin propose-stage p50/p99 in JSON output.
+    #[arg(long, default_value_t = false)]
+    bench_stage_metrics: bool,
 }
 
 struct DemoState {
@@ -179,6 +210,67 @@ struct DemoState {
     /// High bits for auto-generated idem (node_id << 32) so multi-process
     /// demos do not collide and CounterFsm dedupe away successful proposes.
     node_id_base: u64,
+}
+
+fn build_plugin_registry(
+    args: &Args,
+    catalog: Option<std::sync::Arc<multiraft_store::SnapshotCatalog>>,
+) -> PluginRegistry {
+    if !args.premium_plugins {
+        return PluginRegistry::default();
+    }
+    let token = args
+        .admin_token
+        .clone()
+        .or_else(|| std::env::var("MULTIRAFT_ADMIN_TOKEN").ok());
+    let threshold = if args.transition_auto {
+        Some(args.transition_lag_threshold)
+    } else {
+        None
+    };
+    let mut reg = premium_registry(token.as_deref(), threshold);
+    if let Some(catalog) = catalog {
+        reg = reg.register_archive(std::sync::Arc::new(CatalogArchive::new(catalog)));
+    }
+    reg
+}
+
+fn apply_premium_cluster_config(cfg: &mut ClusterConfig, args: &Args) {
+    if args.premium_plugins && args.transition_auto {
+        cfg.transition_poll_interval_ms = args.transition_poll_ms;
+    }
+}
+
+async fn require_admin_auth(
+    State(state): State<Arc<DemoState>>,
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Result<Response, (StatusCode, Json<ErrResp>)> {
+    if !admin_auth_ok(&state.nodes, &headers) {
+        return Err(admin_unauthorized());
+    }
+    Ok(next.run(request).await)
+}
+
+fn admin_auth_ok(nodes: &[MultiRaft], headers: &HeaderMap) -> bool {
+    let Some(node) = nodes.first() else {
+        return true;
+    };
+    let auth = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    node.plugin_registry().authorize_admin(auth)
+}
+
+fn admin_unauthorized() -> (StatusCode, Json<ErrResp>) {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(ErrResp {
+            ok: false,
+            error: "admin auth required".into(),
+        }),
+    )
 }
 
 #[derive(Serialize)]
@@ -289,6 +381,7 @@ async fn run_cluster(args: Args) -> anyhow::Result<()> {
             cfg.snapshot_mode = SnapshotMode::Disabled;
             cfg.snapshot_keep = 2;
             cfg.admin_advertise_addr = Some(([127, 0, 0, 1], args.base_port).into());
+            apply_premium_cluster_config(&mut cfg, &args);
             cfg
         })
         .collect();
@@ -301,7 +394,12 @@ async fn run_cluster(args: Args) -> anyhow::Result<()> {
         "starting single-process MultiRaft cluster (in-process Router)"
     );
 
-    let nodes = MultiRaft::start_cluster(configs).await?;
+    let plugins = build_plugin_registry(&args, None);
+    let nodes = if args.premium_plugins {
+        MultiRaft::start_cluster_with_plugins(configs, plugins).await?
+    } else {
+        MultiRaft::start_cluster(configs).await?
+    };
     let members = peer_ids.clone();
 
     for &gid in &group_ids {
@@ -322,6 +420,12 @@ async fn run_cluster(args: Args) -> anyhow::Result<()> {
         n.on_leader_change(move |group, leader| {
             info!(node = nid, group, ?leader, "leader change");
         });
+    }
+
+    if args.premium_plugins && args.transition_auto {
+        for n in &nodes {
+            n.spawn_transition_loop(group_ids.clone());
+        }
     }
 
     let state = Arc::new(DemoState {
@@ -413,6 +517,7 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
     config.admin_advertise_addr = Some(admin_addr);
     config.daisy_upstream_base = daisy_upstream.clone();
     config.enable_stale_queries = role == NodeRole::Standby;
+    apply_premium_cluster_config(&mut config, &args);
 
     info!(
         node_id,
@@ -427,10 +532,25 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
         "starting MultiRaft gRPC node"
     );
 
-    let node = MultiRaft::start_grpc(config).await?;
+    let catalog_for_plugins = if snapshot_mode == SnapshotMode::StandbyOffload {
+        let root = args.data_dir.join("snapshots");
+        std::fs::create_dir_all(&root)?;
+        Some(Arc::new(SnapshotCatalog::new(root, config.snapshot_keep)))
+    } else {
+        None
+    };
+    let plugins = build_plugin_registry(&args, catalog_for_plugins);
+    let node = if args.premium_plugins {
+        MultiRaft::start_grpc_with_plugins(config, plugins).await?
+    } else {
+        MultiRaft::start_grpc(config).await?
+    };
     if daisy_upstream.is_some() {
         node.spawn_daisy_sync_loop(group_ids.clone());
         info!(node_id, "spawned daisy snapshot sync loop");
+    }
+    if args.premium_plugins && args.transition_auto {
+        node.spawn_transition_loop(group_ids.clone());
     }
 
     // Create groups with retries so peers that start later can join initialize.
@@ -731,11 +851,8 @@ async fn read_group_value_best_effort(
 }
 
 async fn serve_admin(addr: SocketAddr, state: Arc<DemoState>) -> anyhow::Result<()> {
-    let app = AxumRouter::new()
-        .route("/groups/:id/value", get(group_value))
-        .route("/groups/:id/stale", get(group_stale_value))
-        .route("/groups/:id/inc", post(group_inc))
-        .route("/metrics/links", get(metrics_links))
+    let protected = AxumRouter::new()
+        .route("/metrics/propose-stages", get(metrics_propose_stages))
         .route("/admin/shutdown_node/:id", post(shutdown_node))
         .route("/admin/standby_snapshot/:id", post(admin_standby_snapshot))
         .route("/admin/snapshot_ads", post(admin_post_snapshot_ad))
@@ -759,10 +876,33 @@ async fn serve_admin(addr: SocketAddr, state: Arc<DemoState>) -> anyhow::Result<
         .route("/admin/groups/:group/status", get(admin_group_status))
         .route("/admin/catalog/:group", get(admin_catalog))
         .route(
+            "/admin/archive/:group/positions",
+            get(admin_archive_positions),
+        )
+        .route(
+            "/admin/archive/:group/export/:index/:term",
+            get(admin_archive_export),
+        )
+        .route(
+            "/admin/archive/:group/export/:index/:term/data",
+            get(admin_archive_export_data),
+        )
+        .route(
             "/admin/best_snapshot_ad/:group",
             get(admin_best_snapshot_ad),
         )
         .route("/admin/daisy_sync/:group", post(admin_daisy_sync))
+        .route_layer(from_fn_with_state(
+            Arc::clone(&state),
+            require_admin_auth,
+        ));
+
+    let app = AxumRouter::new()
+        .route("/groups/:id/value", get(group_value))
+        .route("/groups/:id/stale", get(group_stale_value))
+        .route("/groups/:id/inc", post(group_inc))
+        .route("/metrics/links", get(metrics_links))
+        .merge(protected)
         .route("/snapshots/:id/latest", get(snapshot_latest))
         .with_state(state);
 
@@ -1457,6 +1597,97 @@ async fn metrics_links(State(state): State<Arc<DemoState>>) -> axum::Json<LinksR
     axum::Json(LinksResp { unique_peer_links })
 }
 
+async fn metrics_propose_stages(
+    State(state): State<Arc<DemoState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrResp>)> {
+    let node = state.nodes.first().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ErrResp {
+            ok: false,
+            error: "no local node".into(),
+        }),
+    ))?;
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "metrics": node.plugin_registry().metrics_snapshots(),
+    })))
+}
+
+async fn admin_archive_positions(
+    State(state): State<Arc<DemoState>>,
+    Path(group): Path<u64>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrResp>)> {
+    let node = state.nodes.first().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ErrResp {
+            ok: false,
+            error: "no local node".into(),
+        }),
+    ))?;
+    let positions: Vec<_> = node
+        .plugin_registry()
+        .archive_plugins()
+        .iter()
+        .flat_map(|a| a.list_positions(group))
+        .collect();
+    Ok(Json(serde_json::json!({ "ok": true, "group": group, "positions": positions })))
+}
+
+async fn admin_archive_export(
+    State(state): State<Arc<DemoState>>,
+    Path((group, index, term)): Path<(u64, u64, u64)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrResp>)> {
+    let node = state.nodes.first().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ErrResp {
+            ok: false,
+            error: "no local node".into(),
+        }),
+    ))?;
+    for archive in node.plugin_registry().archive_plugins() {
+        if let Some(export) = archive.export_at(group, index, term) {
+            return Ok(Json(serde_json::json!({ "ok": true, "export": export })));
+        }
+    }
+    Err((
+        StatusCode::NOT_FOUND,
+        Json(ErrResp {
+            ok: false,
+            error: format!("no snapshot at group={group} index={index} term={term}"),
+        }),
+    ))
+}
+
+async fn admin_archive_export_data(
+    State(state): State<Arc<DemoState>>,
+    Path((group, index, term)): Path<(u64, u64, u64)>,
+) -> Result<Response, (StatusCode, Json<ErrResp>)> {
+    let node = state.nodes.first().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ErrResp {
+            ok: false,
+            error: "no local node".into(),
+        }),
+    ))?;
+    for archive in node.plugin_registry().archive_plugins() {
+        if let Some(bytes) = archive.read_bytes_at(group, index, term) {
+            return Ok((
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                bytes,
+            )
+                .into_response());
+        }
+    }
+    Err((
+        StatusCode::NOT_FOUND,
+        Json(ErrResp {
+            ok: false,
+            error: format!("no snapshot bytes at group={group} index={index} term={term}"),
+        }),
+    ))
+}
+
 /// Shut down one local MultiRaft node (in-process leader-loss simulation).
 async fn shutdown_node(
     State(state): State<Arc<DemoState>>,
@@ -1493,6 +1724,8 @@ struct BenchReport {
     latency_us_max: f64,
     ok: u64,
     err: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    propose_stages: Option<Vec<multiraft_core::MetricsSnapshot>>,
 }
 
 fn percentile_us(sorted: &[u64], p: f64) -> f64 {
@@ -1546,7 +1779,17 @@ async fn run_bench(args: Args) -> anyhow::Result<()> {
         configs.push(cfg);
     }
 
-    let nodes = MultiRaft::start_cluster(configs).await?;
+    let plugins = if args.bench_stage_metrics {
+        premium_registry(None, None)
+    } else {
+        PluginRegistry::default()
+    };
+
+    let nodes = if args.bench_stage_metrics {
+        MultiRaft::start_cluster_with_plugins(configs, plugins).await?
+    } else {
+        MultiRaft::start_cluster(configs).await?
+    };
     for n in &nodes {
         for &g in &group_ids {
             n.create_group(g, &members).await?;
@@ -1580,6 +1823,7 @@ async fn run_bench(args: Args) -> anyhow::Result<()> {
     let mut ok = 0u64;
     let mut err = 0u64;
     let wall = Instant::now();
+    let nodes = Arc::new(nodes);
 
     if concurrency == 1 {
         // Round-robin by *batch index* so batches spread across groups even when
@@ -1596,7 +1840,7 @@ async fn run_bench(args: Args) -> anyhow::Result<()> {
                 idem += 1;
             }
             let t0 = Instant::now();
-            match propose_batch_bench(&nodes, g, payloads).await {
+            match propose_batch_bench(nodes.as_ref(), g, payloads).await {
                 Ok(()) => {
                     ok += n as u64;
                     let us = t0.elapsed().as_micros() as u64;
@@ -1616,14 +1860,14 @@ async fn run_bench(args: Args) -> anyhow::Result<()> {
         let lat_lock = Arc::new(Mutex::new(Vec::new()));
         let ok_c = Arc::new(AtomicU64::new(0));
         let err_c = Arc::new(AtomicU64::new(0));
-        let nodes = Arc::new(nodes);
+        let nodes_c = Arc::clone(&nodes);
         let group_ids = Arc::new(group_ids.clone());
         let mut handles = Vec::new();
         let per = ops / concurrency;
         // Pin each proposer to a group (`worker % groups`) so multi-group load
         // runs in parallel instead of all workers aliasing onto the same gid.
         for worker in 0..concurrency {
-            let nodes = Arc::clone(&nodes);
+            let nodes = Arc::clone(&nodes_c);
             let group_ids = Arc::clone(&group_ids);
             let idem_lock = Arc::clone(&idem_lock);
             let lat_lock = Arc::clone(&lat_lock);
@@ -1643,7 +1887,7 @@ async fn run_bench(args: Args) -> anyhow::Result<()> {
                         }
                     }
                     let t0 = Instant::now();
-                    match propose_batch_bench(&nodes, sticky_gid, payloads).await {
+                    match propose_batch_bench(nodes.as_ref(), sticky_gid, payloads).await {
                         Ok(()) => {
                             ok_c.fetch_add(n as u64, Ordering::Relaxed);
                             let us = t0.elapsed().as_micros() as u64 / n.max(1) as u64;
@@ -1666,7 +1910,6 @@ async fn run_bench(args: Args) -> anyhow::Result<()> {
         ok = ok_c.load(Ordering::Relaxed);
         err = err_c.load(Ordering::Relaxed);
         latencies = lat_lock.lock().await.clone();
-        let _ = nodes;
     }
 
     let wall_ms = wall.elapsed().as_secs_f64() * 1000.0;
@@ -1697,6 +1940,13 @@ async fn run_bench(args: Args) -> anyhow::Result<()> {
         latency_us_max: latencies.last().copied().unwrap_or(0) as f64,
         ok,
         err,
+        propose_stages: if args.bench_stage_metrics {
+            nodes
+                .first()
+                .map(|n| n.plugin_registry().metrics_snapshots())
+        } else {
+            None
+        },
     };
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())

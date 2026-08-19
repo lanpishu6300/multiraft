@@ -1,0 +1,27 @@
+[package]
+name = "multiraft-plugin-ops"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Premium ops helpers and plugin bundle for multiraft"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "multiraft-ops"
+path = "src/main.rs"
+
+[dependencies]
+multiraft-core = { path = "../multiraft-core" }
+multiraft-plugin-auth = { path = "../multiraft-plugin-auth" }
+multiraft-plugin-metrics = { path = "../multiraft-plugin-metrics" }
+multiraft-plugin-transition = { path = "../multiraft-plugin-transition" }
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]

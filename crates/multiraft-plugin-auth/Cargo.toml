@@ -1,0 +1,11 @@
+[package]
+name = "multiraft-plugin-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bearer token admin auth plugin for multiraft"
+
+[dependencies]
+multiraft-core = { path = "../multiraft-core" }
+
+[dev-dependencies]

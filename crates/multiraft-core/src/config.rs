@@ -122,6 +122,8 @@ pub struct ClusterConfig {
     /// openraft `max_payload_entries`: max log entries per **network** AppendEntries RPC
     /// (`0` = library default 300). Raise (e.g. 4096) for sync=1 replication group-commit.
     pub max_payload_entries: u64,
+    /// Background transition policy poll interval (`0` = disabled).
+    pub transition_poll_interval_ms: u64,
 }
 
 impl ClusterConfig {
@@ -165,6 +167,7 @@ impl ClusterConfig {
             api_batch_capacity: 0,
             max_append_entries: 0,
             max_payload_entries: 0,
+            transition_poll_interval_ms: 0,
         }
     }
 

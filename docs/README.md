@@ -26,6 +26,9 @@ Self-contained docs for the **multiraft** GitHub repository (no links outside th
 | [2026-07-21-aeron-inspired-hotpath-design.md](./specs/2026-07-21-aeron-inspired-hotpath-design.md) | [2026-07-21-aeron-inspired-hotpath-design.zh-CN.md](./specs/2026-07-21-aeron-inspired-hotpath-design.zh-CN.md) | Hot path + design philosophy (M1–M4) |
 | [2026-07-22-sync1-disk-pipeline-merge.md](./specs/2026-07-22-sync1-disk-pipeline-merge.md) | [2026-07-22-sync1-disk-pipeline-merge.zh-CN.md](./specs/2026-07-22-sync1-disk-pipeline-merge.zh-CN.md) | M4: deep pipeline / sync=1 group-commit / replication batch + knees |
 | [2026-07-22-aeron-next-borrow.md](./specs/2026-07-22-aeron-next-borrow.md) | [2026-07-22-aeron-next-borrow.zh-CN.md](./specs/2026-07-22-aeron-next-borrow.zh-CN.md) | Next Aeron borrow backlog (N1–N3) |
+| [2026-08-19-plugin-v1-design.md](./specs/2026-08-19-plugin-v1-design.md) | [2026-08-19-plugin-v1-design.zh-CN.md](./specs/2026-08-19-plugin-v1-design.zh-CN.md) | Plugin traits + metrics plugin (v1) |
+| [2026-08-19-premium-plugin-test-matrix.md](./specs/2026-08-19-premium-plugin-test-matrix.md) | [2026-08-19-premium-plugin-test-matrix.zh-CN.md](./specs/2026-08-19-premium-plugin-test-matrix.zh-CN.md) | Premium plugin + Standby regression test IDs |
+| [2026-08-19-premium-recovery-playbook.md](./specs/2026-08-19-premium-recovery-playbook.md) | [2026-08-19-premium-recovery-playbook.zh-CN.md](./specs/2026-08-19-premium-recovery-playbook.zh-CN.md) | Premium ops recovery curl playbook (N3c) |
 
 ## Compare / positioning
 

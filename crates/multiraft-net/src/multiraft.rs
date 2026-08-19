@@ -42,7 +42,11 @@ use multiraft_core::GroupId;
 use multiraft_core::MultiRaftError;
 use multiraft_core::NodeId;
 use multiraft_core::NodeRole;
+use multiraft_core::PluginContext;
+use multiraft_core::PluginRegistry;
 use multiraft_core::ProposeOk;
+use multiraft_core::ProposeStage;
+use multiraft_core::StageSample;
 use multiraft_core::RecoverOutcome;
 use multiraft_core::Request;
 use multiraft_core::SnapshotAdvertisement;
@@ -180,9 +184,22 @@ impl SharedFabric {
     }
 
     pub async fn start_node(&self, config: ClusterConfig) -> anyhow::Result<MultiRaft> {
-        MultiRaft::start_inner(config, self.router.clone(), self.glue.clone(), |_| {
-            CounterFsm::new()
-        })
+        self.start_node_with_plugins(config, PluginRegistry::default())
+            .await
+    }
+
+    pub async fn start_node_with_plugins(
+        &self,
+        config: ClusterConfig,
+        plugins: PluginRegistry,
+    ) -> anyhow::Result<MultiRaft> {
+        MultiRaft::start_inner(
+            config,
+            self.router.clone(),
+            self.glue.clone(),
+            |_| CounterFsm::new(),
+            Arc::new(plugins),
+        )
         .await
     }
 }
@@ -203,14 +220,23 @@ pub struct MultiRaft<S: StateMachine = CounterFsm> {
     snapshot_rt: Arc<SnapshotRuntime>,
     /// Standby node ids for replication throttle (shared with Router / GrpcRouter).
     standby_throttle: StandbyThrottle,
+    plugins: Arc<PluginRegistry>,
 }
 
 impl MultiRaft<CounterFsm> {
     /// Start a single in-process node with a private [`Router`].
     pub async fn start(config: ClusterConfig) -> anyhow::Result<Self> {
+        Self::start_with_plugins(config, PluginRegistry::default()).await
+    }
+
+    /// Start with an optional [`PluginRegistry`] (metrics, archive ops, …).
+    pub async fn start_with_plugins(
+        config: ClusterConfig,
+        plugins: PluginRegistry,
+    ) -> anyhow::Result<Self> {
         Self::start_inner(config, Router::new(), ClusterGlue::default(), |_| {
             CounterFsm::new()
-        })
+        }, Arc::new(plugins))
         .await
     }
 
@@ -219,10 +245,18 @@ impl MultiRaft<CounterFsm> {
     /// `SocketAddr` peers in each config are unused; nodes are linked via the shared router.
     /// Internally uses [`SharedFabric`]; prefer that type when tests need node restart.
     pub async fn start_cluster(configs: Vec<ClusterConfig>) -> anyhow::Result<Vec<Self>> {
+        Self::start_cluster_with_plugins(configs, PluginRegistry::default()).await
+    }
+
+    /// Like [`Self::start_cluster`] with a shared [`PluginRegistry`] per node.
+    pub async fn start_cluster_with_plugins(
+        configs: Vec<ClusterConfig>,
+        plugins: PluginRegistry,
+    ) -> anyhow::Result<Vec<Self>> {
         let fabric = SharedFabric::new();
         let mut nodes = Vec::with_capacity(configs.len());
         for config in configs {
-            nodes.push(fabric.start_node(config).await?);
+            nodes.push(fabric.start_node_with_plugins(config, plugins.clone()).await?);
         }
         Ok(nodes)
     }
@@ -232,7 +266,15 @@ impl MultiRaft<CounterFsm> {
     /// Binds a gRPC server on this node's address from `config.peers` and uses
     /// [`GrpcRouter`] for outbound Raft RPCs to other peers.
     pub async fn start_grpc(config: ClusterConfig) -> anyhow::Result<Self> {
-        Self::start_grpc_inner(config, |_| CounterFsm::new()).await
+        Self::start_grpc_with_plugins(config, PluginRegistry::default()).await
+    }
+
+    /// gRPC node start with optional [`PluginRegistry`].
+    pub async fn start_grpc_with_plugins(
+        config: ClusterConfig,
+        plugins: PluginRegistry,
+    ) -> anyhow::Result<Self> {
+        Self::start_grpc_inner(config, |_| CounterFsm::new(), Arc::new(plugins)).await
     }
 }
 
@@ -242,6 +284,7 @@ impl<S: StateMachine> MultiRaft<S> {
         router: Router,
         glue: ClusterGlue,
         make_fsm: F,
+        plugins: Arc<PluginRegistry>,
     ) -> anyhow::Result<Self>
     where
         F: Fn(GroupId) -> S + Send + Sync + 'static,
@@ -253,7 +296,7 @@ impl<S: StateMachine> MultiRaft<S> {
         router.throttle().apply_config(&config);
         let standby_throttle = router.throttle().clone();
 
-        Ok(Self {
+        let node = Self {
             node_id: config.node_id,
             config,
             net: NetBackend::InProcess { router, glue },
@@ -262,10 +305,17 @@ impl<S: StateMachine> MultiRaft<S> {
             leader_cbs: Arc::new(Mutex::new(Vec::new())),
             snapshot_rt,
             standby_throttle,
-        })
+            plugins,
+        };
+        node.plugins.on_node_start(&node.plugin_ctx());
+        Ok(node)
     }
 
-    async fn start_grpc_inner<F>(config: ClusterConfig, make_fsm: F) -> anyhow::Result<Self>
+    async fn start_grpc_inner<F>(
+        config: ClusterConfig,
+        make_fsm: F,
+        plugins: Arc<PluginRegistry>,
+    ) -> anyhow::Result<Self>
     where
         F: Fn(GroupId) -> S + Send + Sync + 'static,
     {
@@ -297,7 +347,7 @@ impl<S: StateMachine> MultiRaft<S> {
         // Give the accept loop a moment to register with the runtime.
         TypeConfig::sleep(Duration::from_millis(20)).await;
 
-        Ok(Self {
+        let node = Self {
             node_id: config.node_id,
             config,
             net: NetBackend::Grpc {
@@ -308,7 +358,21 @@ impl<S: StateMachine> MultiRaft<S> {
             leader_cbs: Arc::new(Mutex::new(Vec::new())),
             snapshot_rt,
             standby_throttle,
-        })
+            plugins,
+        };
+        node.plugins.on_node_start(&node.plugin_ctx());
+        Ok(node)
+    }
+
+    fn plugin_ctx(&self) -> PluginContext {
+        PluginContext {
+            node_id: self.node_id,
+        }
+    }
+
+    /// Optional plugins attached at node start (metrics, archive, …).
+    pub fn plugin_registry(&self) -> &PluginRegistry {
+        &self.plugins
     }
 
     /// Create (or idempotently ensure) a local Raft group peer.
@@ -360,6 +424,8 @@ impl<S: StateMachine> MultiRaft<S> {
             }
         }
 
+        self.plugins
+            .on_group_ready(&self.plugin_ctx(), group);
         Ok(())
     }
 
@@ -617,6 +683,19 @@ impl<S: StateMachine> MultiRaft<S> {
         });
     }
 
+    /// Background loop: evaluate transition plugins and auto-promote lagging standbys.
+    pub fn spawn_transition_loop(&self, groups: Vec<u64>) {
+        crate::transition_loop::spawn_transition_loop(
+            crate::transition_loop::TransitionLoopCtx {
+                plugins: self.plugins.clone(),
+                groups: self.groups.clone(),
+                config: self.config.clone(),
+                standby_throttle: self.standby_throttle.clone(),
+            },
+            groups,
+        );
+    }
+
     /// Leader-only: promote a Standby learner to voter (`change_membership` AddVoterIds).
     pub async fn promote_standby(&self, group: u64, node_id: u64) -> Result<(), MultiRaftError> {
         let raft = self
@@ -862,7 +941,21 @@ impl<S: StateMachine> MultiRaft<S> {
         let raft = self
             .raft(group)
             .ok_or(MultiRaftError::UnknownGroup(group))?;
-        Self::client_write_one(&raft, data).await
+        let started = std::time::Instant::now();
+        self.plugins.record_stage(StageSample {
+            group,
+            stage: ProposeStage::ClientEnqueued,
+            duration: Duration::ZERO,
+            ok: true,
+        });
+        let result = Self::client_write_one(&raft, &self.plugins, group, data).await;
+        self.plugins.record_stage(StageSample {
+            group,
+            stage: ProposeStage::ClientWrite,
+            duration: started.elapsed(),
+            ok: result.is_ok(),
+        });
+        result
     }
 
     /// Pipeline many proposes: **one Raft entry per payload**, concurrent `client_write`.
@@ -885,9 +978,27 @@ impl<S: StateMachine> MultiRaft<S> {
         let raft = self
             .raft(group)
             .ok_or(MultiRaftError::UnknownGroup(group))?;
+        let plugins = self.plugins.clone();
         futures::future::try_join_all(payloads.into_iter().map(|data| {
             let raft = raft.clone();
-            async move { Self::client_write_one(&raft, data).await }
+            let plugins = plugins.clone();
+            async move {
+                plugins.record_stage(StageSample {
+                    group,
+                    stage: ProposeStage::ClientEnqueued,
+                    duration: Duration::ZERO,
+                    ok: true,
+                });
+                let started = std::time::Instant::now();
+                let result = Self::client_write_one(&raft, &plugins, group, data).await;
+                plugins.record_stage(StageSample {
+                    group,
+                    stage: ProposeStage::ClientWrite,
+                    duration: started.elapsed(),
+                    ok: result.is_ok(),
+                });
+                result
+            }
         }))
         .await
     }
@@ -930,12 +1041,19 @@ impl<S: StateMachine> MultiRaft<S> {
         Ok(out)
     }
 
-    async fn client_write_one(raft: &Raft<S>, data: Vec<u8>) -> Result<ProposeOk, MultiRaftError> {
+    async fn client_write_one(
+        raft: &Raft<S>,
+        plugins: &PluginRegistry,
+        group: GroupId,
+        data: Vec<u8>,
+    ) -> Result<ProposeOk, MultiRaftError> {
         match raft.client_write(Request::new(data)).await {
-            Ok(resp) => Ok(ProposeOk {
-                index: resp.log_id.index(),
-                term: resp.log_id.committed_leader_id().term,
-            }),
+            Ok(resp) => {
+                let index = resp.log_id.index();
+                let term = resp.log_id.committed_leader_id().term;
+                crate::stage_metrics::record_openraft_stages(plugins, group, index, raft).await;
+                Ok(ProposeOk { index, term })
+            }
             Err(e) => {
                 if let Some(fwd) = e.forward_to_leader() {
                     return Err(MultiRaftError::NotLeader {
@@ -1056,6 +1174,7 @@ impl<S: StateMachine> MultiRaft<S> {
         if let NetBackend::InProcess { router, .. } = &self.net {
             let _ = router.unregister_node(self.node_id);
         }
+        self.plugins.on_node_stop(&self.plugin_ctx());
         Ok(())
     }
 
@@ -1178,6 +1297,7 @@ impl<S: StateMachine> MultiRaft<S> {
             } else {
                 self.config.max_payload_entries
             },
+            log_stage_capacity: Some(4096),
             ..Default::default()
         };
         let config = Arc::new(

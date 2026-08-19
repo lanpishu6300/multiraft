@@ -26,6 +26,9 @@
 | [2026-07-21-aeron-inspired-hotpath-design.md](./specs/2026-07-21-aeron-inspired-hotpath-design.md) | [2026-07-21-aeron-inspired-hotpath-design.zh-CN.md](./specs/2026-07-21-aeron-inspired-hotpath-design.zh-CN.md) | 热路径 + 设计理念（M1–M4） |
 | [2026-07-22-sync1-disk-pipeline-merge.md](./specs/2026-07-22-sync1-disk-pipeline-merge.md) | [2026-07-22-sync1-disk-pipeline-merge.zh-CN.md](./specs/2026-07-22-sync1-disk-pipeline-merge.zh-CN.md) | M4：深流水线 / sync=1 组提交 / 复制批与拐点 |
 | [2026-07-22-aeron-next-borrow.md](./specs/2026-07-22-aeron-next-borrow.md) | [2026-07-22-aeron-next-borrow.zh-CN.md](./specs/2026-07-22-aeron-next-borrow.zh-CN.md) | 下一阶段 Aeron 借鉴 backlog（N1–N3） |
+| [2026-08-19-plugin-v1-design.md](./specs/2026-08-19-plugin-v1-design.md) | [2026-08-19-plugin-v1-design.zh-CN.md](./specs/2026-08-19-plugin-v1-design.zh-CN.md) | 插件 trait + metrics 插件（v1） |
+| [2026-08-19-premium-plugin-test-matrix.md](./specs/2026-08-19-premium-plugin-test-matrix.md) | [2026-08-19-premium-plugin-test-matrix.zh-CN.md](./specs/2026-08-19-premium-plugin-test-matrix.zh-CN.md) | Premium 插件 + Standby 回归测试 ID |
+| [2026-08-19-premium-recovery-playbook.md](./specs/2026-08-19-premium-recovery-playbook.md) | [2026-08-19-premium-recovery-playbook.zh-CN.md](./specs/2026-08-19-premium-recovery-playbook.zh-CN.md) | Premium 运维恢复 curl 剧本（N3c） |
 
 ## 对照 / 定位
 
