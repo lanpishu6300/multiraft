@@ -33,7 +33,7 @@ patterns=(
 while IFS= read -r f; do
   [[ -f "$f" ]] || continue
   case "$f" in
-    scripts/check-no-ai-traces.sh|scripts/git-hooks/*) continue ;;
+    scripts/check-no-ai-traces.sh|scripts/git-hooks/*|scripts/rewrite-drop-cursor-coauthor.sh) continue ;;
   esac
   for p in "${patterns[@]}"; do
     if grep -Eiq "$p" "$f" 2>/dev/null; then
@@ -44,8 +44,9 @@ while IFS= read -r f; do
 done < <(list_files)
 
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  if git log --all --format='%B' | grep -Eiq 'Co-authored-by:[[:space:]]*Cursor|cursoragent@cursor\.com'; then
-    echo "WARN: git history still contains Cursor Co-authored-by trailers (rewrite only if you intend to force-push)" >&2
+  if git log --all --format='%ae %ce %B' | grep -Eiq 'cursoragent@cursor\.com|Co-authored-by:[[:space:]]*Cursor'; then
+    echo "FAIL: git history contains Cursor/cursoragent attribution (run scripts/rewrite-drop-cursor-coauthor.sh)" >&2
+    fail=1
   fi
 fi
 

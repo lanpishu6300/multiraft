@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Block pushes that would add cursoragent@cursor.com to GitHub contributors.
+set -euo pipefail
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+# shellcheck source=scripts/git-hooks/strip-ai-attribution.sh
+source "$root/scripts/git-hooks/strip-ai-attribution.sh"
+
+remote="${1:?remote name}"
+url="${2:-}"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [[ "$local_sha" == 0000000000000000000000000000000000000000 ]] && continue
+  [[ "$remote_sha" == 0000000000000000000000000000000000000000 ]] \
+    && range="$local_sha" \
+    || range="${remote_sha}..${local_sha}"
+
+  while read -r sha; do
+    [[ -z "$sha" ]] && continue
+    if commit_has_ai_attribution "$sha"; then
+      echo "pre-push: refuse push to $remote ($url): commit $sha has Cursor/cursoragent attribution" >&2
+      echo "pre-push: amend or rebase to drop Co-authored-by / cursoragent author, then push again" >&2
+      echo "pre-push: see scripts/rewrite-drop-cursor-coauthor.sh for history cleanup" >&2
+      exit 1
+    fi
+  done < <(git rev-list "$range" 2>/dev/null || true)
+done
+
+exit 0

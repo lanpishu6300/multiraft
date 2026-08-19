@@ -44,12 +44,14 @@ Prefer Conventional Commits style:
 - `docs: …`
 - `chore: …`
 
-Do not add `Co-authored-by` (or similar) trailers for editor/AI tools. After clone:
+Do not add `Co-authored-by` (or similar) trailers for editor/AI tools (`cursoragent@cursor.com` adds Cursor Agent to GitHub Contributors). After clone:
 
 ```bash
-./scripts/install-git-hooks.sh
+./scripts/install-git-hooks.sh   # prepare-commit-msg / commit-msg / pre-push
 ./scripts/check-no-ai-traces.sh
 ```
+
+If history already has Cursor attribution and you need it off Contributors: `./scripts/rewrite-drop-cursor-coauthor.sh`, then `git push --force-with-lease`.
 
 Docs are bilingual where applicable (`foo.md` + `foo.zh-CN.md`). Keep wording concrete; avoid tool/agent attribution in tree or history you push.
 

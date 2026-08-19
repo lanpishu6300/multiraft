@@ -44,12 +44,14 @@ cargo test --workspace
 - `docs: …`
 - `chore: …`
 
-不要在提交里加编辑器 / AI 工具的 `Co-authored-by` 等归属行。克隆后建议：
+不要在提交里加编辑器 / AI 工具的 `Co-authored-by` 等归属行（含 `cursoragent@cursor.com`，否则 GitHub Contributors 会出现 Cursor Agent）。克隆后建议：
 
 ```bash
-./scripts/install-git-hooks.sh
+./scripts/install-git-hooks.sh   # prepare-commit-msg / commit-msg / pre-push
 ./scripts/check-no-ai-traces.sh
 ```
+
+若历史已含 Cursor 归属且需从 Contributors 移除：`./scripts/rewrite-drop-cursor-coauthor.sh`，再 `git push --force-with-lease`。
 
 文档尽量中英成对（`foo.md` + `foo.zh-CN.md`）。表述具体即可，仓库与将推送的历史中不要留下工具 / agent 归属痕迹。
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Strip editor/AI Co-authored-by trailers, then refuse leftovers.
+# Cursor injects Co-authored-by before commit-msg; strip as early as possible.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 # shellcheck source=scripts/git-hooks/strip-ai-attribution.sh
@@ -7,10 +7,4 @@ source "$root/scripts/git-hooks/strip-ai-attribution.sh"
 
 msg_file="${1:?commit message file}"
 strip_ai_attribution "$msg_file"
-
-if commit_msg_has_ai_attribution "$msg_file"; then
-  echo "commit-msg: refuse AI/editor attribution (Cursor/cursoragent, Copilot, …)" >&2
-  exit 1
-fi
-
 exit 0
