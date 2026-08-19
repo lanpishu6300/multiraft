@@ -364,7 +364,14 @@ impl<S: StateMachine> MultiRaft<S> {
     }
 
     /// Leader-only: add a Standby as an openraft Learner (`add_learner`, blocking).
+    ///
+    /// Retries transient "configuration change in progress" errors until membership
+    /// from a prior `initialize` / `change_membership` commits (openraft requirement).
     pub async fn add_standby(&self, group: u64, standby_id: u64) -> Result<(), MultiRaftError> {
+        retry_on_membership_pending(|| self.add_standby_once(group, standby_id)).await
+    }
+
+    async fn add_standby_once(&self, group: u64, standby_id: u64) -> Result<(), MultiRaftError> {
         let raft = self
             .raft(group)
             .ok_or(MultiRaftError::UnknownGroup(group))?;
@@ -388,11 +395,8 @@ impl<S: StateMachine> MultiRaft<S> {
                     });
                 }
                 let msg = e.to_string();
-                // Transient: another membership change may still be committing.
                 if msg.contains("configuration change") {
-                    return Err(MultiRaftError::Other(anyhow::anyhow!(
-                        "add_learner: {e} (retry after membership settles)"
-                    )));
+                    return Err(transient_membership_err("add_learner", &e));
                 }
                 Err(MultiRaftError::Other(anyhow::anyhow!("add_learner: {e}")))
             }
@@ -635,6 +639,13 @@ impl<S: StateMachine> MultiRaft<S> {
                 "promote_standby: node {node_id} is not a learner in group {group}"
             )));
         }
+        retry_on_membership_pending(|| self.promote_standby_once(group, node_id)).await
+    }
+
+    async fn promote_standby_once(&self, group: u64, node_id: u64) -> Result<(), MultiRaftError> {
+        let raft = self
+            .raft(group)
+            .ok_or(MultiRaftError::UnknownGroup(group))?;
         let mut add = BTreeSet::new();
         add.insert(node_id);
         match raft
@@ -650,6 +661,10 @@ impl<S: StateMachine> MultiRaft<S> {
                     return Err(MultiRaftError::NotLeader {
                         hint: fwd.leader_id,
                     });
+                }
+                let msg = e.to_string();
+                if msg.contains("configuration change") {
+                    return Err(transient_membership_err("promote_standby change_membership", &e));
                 }
                 Err(MultiRaftError::Other(anyhow::anyhow!(
                     "promote_standby change_membership: {e}"
@@ -674,6 +689,13 @@ impl<S: StateMachine> MultiRaft<S> {
             self.standby_throttle.insert(node_id);
             return Ok(());
         }
+        retry_on_membership_pending(|| self.demote_to_standby_once(group, node_id)).await
+    }
+
+    async fn demote_to_standby_once(&self, group: u64, node_id: u64) -> Result<(), MultiRaftError> {
+        let raft = self
+            .raft(group)
+            .ok_or(MultiRaftError::UnknownGroup(group))?;
         let mut remove = BTreeSet::new();
         remove.insert(node_id);
         match raft
@@ -689,6 +711,13 @@ impl<S: StateMachine> MultiRaft<S> {
                     return Err(MultiRaftError::NotLeader {
                         hint: fwd.leader_id,
                     });
+                }
+                let msg = e.to_string();
+                if msg.contains("configuration change") {
+                    return Err(transient_membership_err(
+                        "demote_to_standby change_membership",
+                        &e,
+                    ));
                 }
                 Err(MultiRaftError::Other(anyhow::anyhow!(
                     "demote_to_standby change_membership: {e}"
@@ -1492,6 +1521,39 @@ async fn daisy_sync_once<S: StateMachine>(
         last_index: fetched.last_index,
         last_term: fetched.last_term,
     })
+}
+
+const MEMBERSHIP_RETRY_TIMEOUT: Duration = Duration::from_secs(15);
+const MEMBERSHIP_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
+fn transient_membership_err(label: &str, e: &impl std::fmt::Display) -> MultiRaftError {
+    MultiRaftError::Other(anyhow::anyhow!(
+        "{label}: {e} (retry after membership settles)"
+    ))
+}
+
+fn membership_err_retryable(err: &MultiRaftError) -> bool {
+    matches!(err, MultiRaftError::Other(e) if e.to_string().contains("configuration change"))
+}
+
+async fn retry_on_membership_pending<F, Fut>(mut op: F) -> Result<(), MultiRaftError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), MultiRaftError>>,
+{
+    let deadline = std::time::Instant::now() + MEMBERSHIP_RETRY_TIMEOUT;
+    loop {
+        match op().await {
+            Ok(()) => return Ok(()),
+            Err(e) if membership_err_retryable(&e) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(e);
+                }
+                tokio::time::sleep(MEMBERSHIP_RETRY_INTERVAL).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// True when `(remote_term, remote_index)` is strictly newer than local.
