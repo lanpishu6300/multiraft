@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use multiraft_core::FileLogSyncLevel;
 use multiraft_fsm::CounterFsm;
 use multiraft_store::FileLogStoreOf;
 use multiraft_store::Raft;
@@ -11,9 +12,9 @@ use multiraft_store::Request;
 use multiraft_store::StateMachineStore;
 use multiraft_store::StubNetworkFactory;
 use multiraft_store::TypeConfig as RaftTypeConfig;
+use openraft::type_config::TypeConfigExt;
 use openraft::BasicNode;
 use openraft::Config;
-use openraft::type_config::TypeConfigExt;
 
 fn temp_dir(label: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -76,12 +77,18 @@ fn open_empty_dir_write_reopen_persists_value() {
             let (raft, sm) = create_single_node_file(1, group_id, &data_dir).await;
 
             let mut nodes = BTreeMap::new();
-            nodes.insert(1u64, BasicNode { addr: "".to_string() });
+            nodes.insert(
+                1u64,
+                BasicNode {
+                    addr: "".to_string(),
+                },
+            );
             raft.initialize(nodes).await.unwrap();
             RaftTypeConfig::sleep(Duration::from_millis(200)).await;
 
             for (i, delta) in [10i64, 20, 30].into_iter().enumerate() {
-                let req = Request::new(CounterFsm::encode_add(delta, /*idem=*/ (i as u64) + 1));
+                let req =
+                    Request::new(CounterFsm::encode_add(delta, /*idem=*/ (i as u64) + 1));
                 raft.client_write(req).await.unwrap();
             }
 
@@ -111,4 +118,18 @@ fn corrupt_hard_state_fails_open() {
     let err = FileLogStoreOf::open(&dir).expect_err("corrupt hard_state must fail");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn open_with_sync_levels() {
+    for level in [
+        FileLogSyncLevel::Os,
+        FileLogSyncLevel::Data,
+        FileLogSyncLevel::All,
+    ] {
+        let dir = temp_dir(&format!("sync-{}", level.as_u8()));
+        let store = FileLogStoreOf::open_with_options(&dir, 0, level).expect("open");
+        assert_eq!(store.sync_level(), level);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

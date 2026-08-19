@@ -9,17 +9,30 @@ downstream app): RMQ Leader propose + a pluggable matching FSM.
 
 **License:** [Apache License 2.0](LICENSE)  
 **中文：** [README.zh-CN.md](README.zh-CN.md)  
-**Wiki：** [English](docs/wiki/en/Home.md) · [中文](docs/wiki/zh/Home.md)
+**Wiki：** [English](docs/wiki/en/Home.md) · [中文](docs/wiki/zh/Home.md)  
+**Highlights：** [English](docs/spotlight/2026-07-hotpath-sync1.md) · [中文](docs/spotlight/2026-07-hotpath-sync1.zh-CN.md)
 
 ---
 
 ## Features
 
 - Multi-group Raft in one process; peer links **O(nodes)**, not O(groups)
-- `MultiRaft` facade: `propose`, `read_linearizable`, leader callbacks
-- File-backed log / state / snapshot per group (restart recovery)
+- `MultiRaft` facade: `propose`, `propose_batch`, `read_linearizable`, leader callbacks
+- File-backed log / state / snapshot per group (restart recovery); sync levels **0/1/2** (Aeron-aligned)
+- Aeron-inspired hot path: typed in-process RPC, pipelined propose, coalesced / streamed file append
+- Standby Premium–like HA: learner standby, snapshot offload, promote/demote, daisy chain, stale reads
 - Multi-process gRPC demo (`multiraft-demo`) + admin HTTP for ops / Jepsen
 - Acceptance, chaos scripts, porcupine linearizability test, local Jepsen suite
+
+### vs Aeron Cluster / Standby Premium
+
+multiraft is **not** a fork of Aeron. It targets matching-HA **semantic parity** on openraft (Apache 2.0 Rust), with an Aeron-inspired hot path — not Media Driver, SBE, or commercial Cluster.
+
+- **Measured (3 voters, in-process, this machine):** mem wall **~300k+** TPS; file sync=0 deep pipeline **~117k–187k**; sequential file **~2k**; sync=1 sequential **~25 TPS**, deep pipeline + fat pe **~150k–250k** (see [highlights](docs/spotlight/2026-07-hotpath-sync1.md) / [M4](docs/specs/2026-07-22-sync1-disk-pipeline-merge.md)).
+- **Choose multiraft** for embedded Rust/openraft matching HA; **choose Aeron commercial** for Media Driver, full Archive, ClusteredService, and Real Logic support.
+
+Full comparison: [docs/compare/aeron-commercial.md](docs/compare/aeron-commercial.md) · [中文](docs/compare/aeron-commercial.zh-CN.md).  
+Perf ceilings: [docs/perf.md](docs/perf.md) · [中文](docs/perf.zh-CN.md).
 
 ---
 
@@ -170,6 +183,8 @@ Every file under `docs/` (architecture, Jepsen, chaos, upstream, specs, plans) h
 | [docs/README.md](docs/README.md) · [中文](docs/README.zh-CN.md) | Index (EN \| 中文 columns) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [中文](docs/ARCHITECTURE.zh-CN.md) | Crate boundaries |
 | [docs/specs/2026-07-18-multiraft-design.md](docs/specs/2026-07-18-multiraft-design.md) · [中文](docs/specs/2026-07-18-multiraft-design.zh-CN.md) | Design |
+| [docs/specs/2026-07-21-aeron-inspired-hotpath-design.md](docs/specs/2026-07-21-aeron-inspired-hotpath-design.md) · [中文](docs/specs/2026-07-21-aeron-inspired-hotpath-design.zh-CN.md) | Hot path / design philosophy |
+| [docs/compare/aeron-commercial.md](docs/compare/aeron-commercial.md) · [中文](docs/compare/aeron-commercial.zh-CN.md) | vs Aeron commercial |
 | [docs/wiki/en/Home.md](docs/wiki/en/Home.md) · [中文](docs/wiki/zh/Home.md) | Wiki |
 | [CONTRIBUTING.md](CONTRIBUTING.md) · [中文](CONTRIBUTING.zh-CN.md) | How to contribute |
 | [SUPPORT.md](SUPPORT.md) · [中文](SUPPORT.zh-CN.md) | Help channels |

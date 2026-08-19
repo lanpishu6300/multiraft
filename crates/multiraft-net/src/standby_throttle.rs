@@ -5,11 +5,12 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use tokio::sync::OwnedSemaphorePermit;
@@ -27,6 +28,8 @@ pub struct StandbyThrottle {
 #[derive(Debug)]
 struct Inner {
     standby_ids: Mutex<HashSet<NodeId>>,
+    /// Fast path for voter-only clusters (no HashSet lock on every RPC).
+    standby_count: AtomicUsize,
     delay_ms: AtomicU64,
     max_inflight: AtomicU32,
     semaphores: Mutex<HashMap<NodeId, Arc<Semaphore>>>,
@@ -37,6 +40,7 @@ impl Default for StandbyThrottle {
         Self {
             inner: Arc::new(Inner {
                 standby_ids: Mutex::new(HashSet::new()),
+                standby_count: AtomicUsize::new(0),
                 delay_ms: AtomicU64::new(0),
                 max_inflight: AtomicU32::new(8),
                 semaphores: Mutex::new(HashMap::new()),
@@ -69,21 +73,31 @@ impl StandbyThrottle {
             for &id in &config.standby_node_ids {
                 ids.insert(id);
             }
+            self.inner.standby_count.store(ids.len(), Ordering::Relaxed);
         }
         // Reset per-target semaphores so capacity matches new max.
         self.inner.semaphores.lock().unwrap().clear();
     }
 
     pub fn insert(&self, id: NodeId) {
-        self.inner.standby_ids.lock().unwrap().insert(id);
+        let mut ids = self.inner.standby_ids.lock().unwrap();
+        if ids.insert(id) {
+            self.inner.standby_count.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub fn remove(&self, id: NodeId) {
-        self.inner.standby_ids.lock().unwrap().remove(&id);
+        let mut ids = self.inner.standby_ids.lock().unwrap();
+        if ids.remove(&id) {
+            self.inner.standby_count.fetch_sub(1, Ordering::Relaxed);
+        }
         self.inner.semaphores.lock().unwrap().remove(&id);
     }
 
     pub fn contains(&self, id: NodeId) -> bool {
+        if self.inner.standby_count.load(Ordering::Relaxed) == 0 {
+            return false;
+        }
         self.inner.standby_ids.lock().unwrap().contains(&id)
     }
 
@@ -96,7 +110,15 @@ impl StandbyThrottle {
     /// Returns a permit that must be held until the RPC completes. `None` when the
     /// target is not a standby (no throttle).
     pub async fn before_send(&self, target: NodeId) -> Option<OwnedSemaphorePermit> {
-        if !self.contains(target) {
+        // Hot path: no standbys configured → zero locks / no await.
+        if self.inner.standby_count.load(Ordering::Relaxed) == 0 {
+            return None;
+        }
+        let is_standby = {
+            let ids = self.inner.standby_ids.lock().unwrap();
+            ids.contains(&target)
+        };
+        if !is_standby {
             return None;
         }
         let delay = self.inner.delay_ms.load(Ordering::Relaxed);
@@ -162,7 +184,10 @@ mod tests {
         let t = StandbyThrottle::from_config(&cfg);
         let p1 = t.before_send(4).await.expect("first permit");
         let second = tokio::time::timeout(Duration::from_millis(50), t.before_send(4)).await;
-        assert!(second.is_err(), "second acquire should block while first held");
+        assert!(
+            second.is_err(),
+            "second acquire should block while first held"
+        );
         drop(p1);
         let p2 = tokio::time::timeout(Duration::from_millis(200), t.before_send(4))
             .await

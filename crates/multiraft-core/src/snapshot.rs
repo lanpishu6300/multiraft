@@ -66,4 +66,23 @@ mod tests {
         .unwrap();
         assert_eq!(installed["outcome"], "installed");
     }
+
+    #[test]
+    fn standby_trigger_and_advertisement() {
+        assert!(is_standby_snapshot_trigger(STANDBY_SNAPSHOT_TRIGGER));
+        assert!(!is_standby_snapshot_trigger(b"other"));
+        let ad = SnapshotAdvertisement {
+            group: 1,
+            last_index: 10,
+            last_term: 2,
+            snapshot_id: "s1".into(),
+            size: 64,
+            sha256_hex: "abc".into(),
+            fetch_url: "http://127.0.0.1/s".into(),
+        };
+        let s = serde_json::to_string(&ad).unwrap();
+        let back: SnapshotAdvertisement = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, ad);
+        let _ = format!("{ad:?}");
+    }
 }

@@ -51,6 +51,7 @@ fn bin_append(dir: &Path, entry: &FakeEntry) {
 }
 
 #[test]
+#[ignore = "manual microbench: cargo test -p multiraft-store --test bench_file_log_micro -- --ignored --nocapture"]
 fn legacy_rewrite_vs_bin_append_scale() {
     let n = 10_000u64;
     let payload = vec![0u8; 128];

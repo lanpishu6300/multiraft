@@ -1,35 +1,44 @@
 //! In-process Multi-Raft node: one shared receive channel, many Raft groups.
 //!
-//! Adapted from openraft `examples/multi-raft-kv/src/app.rs` + `create_node`
-//! at tag `v0.10.0-alpha.30`.
+//! Dispatches typed [`RaftCall`] without bincode on the hot path. A fixed worker
+//! pool handles RPCs concurrently so pipelined AppendEntries are not serialized
+//! on demux and we avoid unbounded `tokio::spawn` per message.
 
 use std::collections::BTreeMap;
+use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use futures::StreamExt;
 use futures::channel::mpsc;
+use futures::SinkExt;
+use futures::StreamExt;
+use multiraft_core::typ::*;
 use multiraft_core::GroupId;
 use multiraft_core::NodeId;
 use multiraft_fsm::StateMachine;
 use multiraft_store::MemLogStore;
 use multiraft_store::Raft;
 use multiraft_store::StateMachineStore;
+use openraft::error::Infallible;
 use openraft::Config;
 
-use crate::api;
-use crate::encode;
 use crate::network::NetworkFactory;
 use crate::router::NodeMessage;
 use crate::router::NodeRx;
 use crate::router::NodeTx;
+use crate::router::RaftCall;
+use crate::router::RaftReply;
 use crate::router::Router;
-use multiraft_core::typ;
 
-/// Shared map of groups on a node (also used by [`crate::MultiRaft`] for dynamic create).
 pub type GroupMap<S> = Arc<Mutex<BTreeMap<GroupId, GroupApp<S>>>>;
 
-/// A node manages multiple Raft groups that share one inbound connection.
+/// Ingress buffer for pipelined AppendEntries from many groups/peers.
+const NODE_CHANNEL: usize = 16384;
+/// Fixed RPC worker count (concurrent handlers, not Tokio tasks per message).
+const RPC_WORKERS: usize = 32;
+/// Per-worker queue before backpressure propagates to ingress.
+const RPC_WORKER_QUEUE: usize = 256;
+
 pub struct Node<S: StateMachine> {
     pub node_id: NodeId,
     pub groups: GroupMap<S>,
@@ -39,7 +48,7 @@ pub struct Node<S: StateMachine> {
 
 impl<S: StateMachine> Node<S> {
     pub fn new(node_id: NodeId, router: Router) -> (Self, NodeTx) {
-        let (tx, rx) = mpsc::channel(1024);
+        let (tx, rx) = mpsc::channel(NODE_CHANNEL);
         router.register_node(node_id, tx.clone());
 
         let node = Self {
@@ -51,9 +60,8 @@ impl<S: StateMachine> Node<S> {
         (node, tx)
     }
 
-    /// Construct a node that shares an externally owned group map (for MultiRaft).
     pub fn with_groups(node_id: NodeId, router: Router, groups: GroupMap<S>) -> (Self, NodeTx) {
-        let (tx, rx) = mpsc::channel(1024);
+        let (tx, rx) = mpsc::channel(NODE_CHANNEL);
         router.register_node(node_id, tx.clone());
 
         let node = Self {
@@ -65,12 +73,7 @@ impl<S: StateMachine> Node<S> {
         (node, tx)
     }
 
-    pub fn add_group(
-        &self,
-        group_id: GroupId,
-        raft: Raft<S>,
-        state_machine: StateMachineStore<S>,
-    ) {
+    pub fn add_group(&self, group_id: GroupId, raft: Raft<S>, state_machine: StateMachineStore<S>) {
         let app = GroupApp {
             node_id: self.node_id,
             group_id,
@@ -88,50 +91,83 @@ impl<S: StateMachine> Node<S> {
             .map(|g| g.raft.clone())
     }
 
-    /// Dispatch inbound messages to the correct group by `group_id`.
     pub async fn run(mut self) -> Option<()> {
+        let groups = self.groups.clone();
+        let mut workers: Vec<mpsc::Sender<NodeMessage>> = Vec::with_capacity(RPC_WORKERS);
+        for _ in 0..RPC_WORKERS {
+            let (tx, rx) = mpsc::channel(RPC_WORKER_QUEUE);
+            let groups = groups.clone();
+            tokio::spawn(async move {
+                handle_worker(rx, groups).await;
+            });
+            workers.push(tx);
+        }
+
         loop {
             let msg = self.rx.next().await?;
-
-            let NodeMessage {
-                group_id,
-                path,
-                payload,
-                response_tx,
-            } = msg;
-
-            let raft = {
-                let groups = self.groups.lock().unwrap();
-                match groups.get(&group_id) {
-                    Some(g) => g.raft.clone(),
-                    None => {
-                        let _ = response_tx.send(encode::<Result<(), typ::RaftError>>(Err(
-                            typ::RaftError::Fatal(openraft::error::Fatal::Stopped),
-                        )));
-                        continue;
-                    }
+            let idx = msg.group_id as usize % RPC_WORKERS;
+            let worker = &mut workers[idx];
+            if let Err(e) = worker.try_send(msg) {
+                if e.is_full() {
+                    worker.send(e.into_inner()).await.ok()?;
+                } else {
+                    return None;
                 }
-            };
-
-            let res = match path.as_str() {
-                "/raft/append" => api::append(&raft, &payload).await,
-                "/raft/snapshot" => api::snapshot(&raft, &payload).await,
-                "/raft/vote" => api::vote(&raft, &payload).await,
-                "/raft/transfer_leader" => api::transfer_leader(&raft, &payload).await,
-                _ => {
-                    tracing::warn!("unknown path: {}", path);
-                    encode::<Result<(), typ::RaftError>>(Err(typ::RaftError::Fatal(
-                        openraft::error::Fatal::Stopped,
-                    )))
-                }
-            };
-
-            let _ = response_tx.send(res);
+            }
         }
     }
 }
 
-/// Single Raft group's application context on a node.
+async fn handle_worker<S: StateMachine>(mut rx: mpsc::Receiver<NodeMessage>, groups: GroupMap<S>) {
+    while let Some(msg) = rx.next().await {
+        handle_node_message(groups.clone(), msg).await;
+    }
+}
+
+async fn handle_node_message<S: StateMachine>(groups: GroupMap<S>, msg: NodeMessage) {
+    let NodeMessage {
+        group_id,
+        call,
+        response_tx,
+    } = msg;
+
+    let raft = {
+        let g = groups.lock().unwrap();
+        match g.get(&group_id) {
+            Some(app) => app.raft.clone(),
+            None => {
+                let _ = response_tx.send(RaftReply::MissingGroup);
+                return;
+            }
+        }
+    };
+
+    let reply = match call {
+        RaftCall::Vote(req) => RaftReply::Vote(raft.vote(req).await),
+        RaftCall::Append(req) => RaftReply::Append(raft.append_entries(req).await),
+        RaftCall::Snapshot { vote, meta, data } => {
+            let snapshot = Snapshot {
+                meta,
+                snapshot: Cursor::new(data),
+            };
+            let res = raft
+                .install_full_snapshot(vote, snapshot)
+                .await
+                .map_err(RaftError::<Infallible>::Fatal);
+            RaftReply::Snapshot(res)
+        }
+        RaftCall::Transfer(req) => {
+            let res = raft
+                .handle_transfer_leader(req)
+                .await
+                .map_err(RaftError::Fatal);
+            RaftReply::Transfer(res)
+        }
+    };
+
+    let _ = response_tx.send(reply);
+}
+
 pub struct GroupApp<S: StateMachine> {
     pub node_id: NodeId,
     pub group_id: GroupId,
@@ -139,7 +175,6 @@ pub struct GroupApp<S: StateMachine> {
     pub state_machine: StateMachineStore<S>,
 }
 
-/// Create a node with multiple Raft groups sharing one router connection.
 pub async fn create_node<S, F>(
     node_id: NodeId,
     group_ids: &[GroupId],

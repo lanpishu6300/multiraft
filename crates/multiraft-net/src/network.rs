@@ -5,7 +5,6 @@
 
 use std::future::Future;
 
-use openraft::OptionalSend;
 use openraft::alias::SnapshotOf;
 use openraft::error::RPCError;
 use openraft::error::ReplicationClosed;
@@ -20,19 +19,21 @@ use openraft::raft::TransferLeaderRequest;
 use openraft::raft::TransferLeaderResponse;
 use openraft::raft::VoteRequest;
 use openraft::raft::VoteResponse;
+use openraft::OptionalSend;
 use openraft_multi::GroupNetworkAdapter;
 use openraft_multi::GroupRouter;
 
 use crate::grpc::GrpcRouter;
 use crate::router::Router;
+use multiraft_core::typ;
 use multiraft_core::GroupId;
 use multiraft_core::NodeId;
 use multiraft_core::TypeConfig;
-use multiraft_core::typ;
 
 impl GroupRouter<TypeConfig, GroupId> for Router {
     type SnapshotData = typ::SnapshotData;
 
+    #[inline]
     async fn append_entries(
         &self,
         target: NodeId,
@@ -40,7 +41,8 @@ impl GroupRouter<TypeConfig, GroupId> for Router {
         rpc: AppendEntriesRequest<TypeConfig>,
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<TypeConfig>, RPCError<TypeConfig>> {
-        self.send(target, group_id, "/raft/append", rpc)
+        // Hot path: typed in-process hop; ignore RPCOption (no transport TTL).
+        self.send_append(target, group_id, rpc)
             .await
             .map_err(RPCError::Unreachable)
     }
@@ -52,7 +54,7 @@ impl GroupRouter<TypeConfig, GroupId> for Router {
         rpc: VoteRequest<TypeConfig>,
         _option: RPCOption,
     ) -> Result<VoteResponse<TypeConfig>, RPCError<TypeConfig>> {
-        self.send(target, group_id, "/raft/vote", rpc)
+        self.send_vote(target, group_id, rpc)
             .await
             .map_err(RPCError::Unreachable)
     }
@@ -67,14 +69,9 @@ impl GroupRouter<TypeConfig, GroupId> for Router {
         _option: RPCOption,
     ) -> Result<SnapshotResponse<TypeConfig>, StreamingError<TypeConfig>> {
         let data: Vec<u8> = snapshot.snapshot.into_inner();
-        self.send(
-            target,
-            group_id,
-            "/raft/snapshot",
-            (vote, snapshot.meta, data),
-        )
-        .await
-        .map_err(StreamingError::Unreachable)
+        self.send_snapshot(target, group_id, vote, snapshot.meta, data)
+            .await
+            .map_err(StreamingError::Unreachable)
     }
 
     async fn transfer_leader(
@@ -84,15 +81,15 @@ impl GroupRouter<TypeConfig, GroupId> for Router {
         req: TransferLeaderRequest<TypeConfig>,
         _option: RPCOption,
     ) -> Result<TransferLeaderResponse<TypeConfig>, RPCError<TypeConfig>> {
-        self.send(target, group_id, "/raft/transfer_leader", req)
+        self.send_transfer(target, group_id, req)
             .await
             .map_err(RPCError::Unreachable)
     }
 
     fn backoff(&self) -> Option<Backoff> {
-        Some(Backoff::new(std::iter::repeat(std::time::Duration::from_millis(
-            500,
-        ))))
+        // In-process: no transport backoff; openraft `Config::backoff` handles retries.
+        // A fixed 500ms sleep here stalled pipelined AppendEntries recovery.
+        None
     }
 }
 

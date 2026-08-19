@@ -6,14 +6,12 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use axum::Json;
-use axum::Router as AxumRouter;
 use axum::extract::Path;
 use axum::extract::State;
 use axum::http::HeaderMap;
@@ -22,16 +20,19 @@ use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::routing::get;
 use axum::routing::post;
+use axum::Json;
+use axum::Router as AxumRouter;
 use clap::Parser;
 use clap::ValueEnum;
 use multiraft_core::ClusterConfig;
+use multiraft_core::FileLogSyncLevel;
 use multiraft_core::MultiRaftError;
 use multiraft_core::NodeRole;
 use multiraft_core::SnapshotAdvertisement;
 use multiraft_core::SnapshotMode;
 use multiraft_fsm::CounterFsm;
-use multiraft_net::MultiRaft;
 use multiraft_net::wait_for_leader;
+use multiraft_net::MultiRaft;
 use serde::Deserialize;
 use serde::Serialize;
 use tracing::info;
@@ -113,13 +114,61 @@ struct Args {
     #[arg(long, default_value_t = 5_000)]
     bench_ops: u64,
 
-    /// `--mode bench`: concurrent proposers (1 = sequential).
+    /// `--mode bench`: concurrent proposers (`1` = sequential).
+    ///
+    /// Combine with `--bench-batch-size` for deep pipeline (e.g. `4` × `8`).
     #[arg(long, default_value_t = 1)]
     bench_concurrency: u64,
 
     /// `--mode bench`: use file-backed log under `{data-dir}/bench/` (else memory).
     #[arg(long, default_value_t = false)]
     bench_file_log: bool,
+
+    /// `--mode bench`: pipeline this many proposes per batch (`1` = single propose).
+    ///
+    /// File deep pipeline: try `16` with `--bench-file-coalesce-us 50`, or
+    /// `--bench-concurrency 4 --bench-batch-size 8` (see `docs/perf.md` M3b).
+    #[arg(long, default_value_t = 1)]
+    bench_batch_size: u64,
+
+    /// `--mode bench` + `--bench-file-log`: file log coalesce window in microseconds
+    /// (`0` = flush each append; use with `--bench-batch-size` > 1 for group-commit).
+    #[arg(long, default_value_t = 0)]
+    bench_file_coalesce_us: u64,
+
+    /// `--mode bench` + `--bench-file-log`: local disk sync level
+    /// (`0` = OS page cache, `1` = sync_data, `2` = sync_all; Aeron-aligned).
+    #[arg(long, default_value_t = 0)]
+    bench_file_sync_level: u8,
+
+    /// `--mode bench` + `--bench-file-log`: Os stream flush size threshold (bytes, `0` = off).
+    #[arg(long, default_value_t = 0)]
+    bench_file_stream_buf: usize,
+
+    /// `--mode bench` + `--bench-file-log`: Os stream max hold time (ms, `0` = off).
+    #[arg(long, default_value_t = 0)]
+    bench_file_stream_flush_ms: u64,
+
+    /// Timed group-commit: hold overlapping appends until coalesce timer / size cap
+    /// (use with `--bench-file-coalesce-us` 5000–50000 for sync=1 ceiling tests).
+    #[arg(long, default_value_t = false)]
+    bench_file_hold_overlap: bool,
+
+    /// openraft ClientWrite merge linger (ms). `0` = no linger; try `1`–`5` with deep pipeline.
+    #[arg(long, default_value_t = 0)]
+    bench_api_batch_linger_ms: u64,
+
+    /// openraft `api_batch_capacity` (`0` = default 4096).
+    #[arg(long, default_value_t = 0)]
+    bench_api_batch_capacity: u64,
+
+    /// openraft `max_payload_entries` per AppendEntries RPC (`0` = default 300; try 2048–4096 for sync=1).
+    #[arg(long, default_value_t = 0)]
+    bench_max_payload_entries: u64,
+
+    /// openraft `max_append_entries` storage merge cap (`0` = default 4096).
+    #[arg(long, default_value_t = 0)]
+    bench_max_append_entries: u64,
 }
 
 struct DemoState {
@@ -192,8 +241,7 @@ struct ErrResp {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -209,9 +257,7 @@ fn peer_addrs(base_port: u16, nodes: u64) -> Vec<(u64, SocketAddr)> {
     (1..=nodes)
         .map(|pid| {
             let port = base_port.saturating_add((pid as u16).saturating_sub(1));
-            let addr: SocketAddr = format!("127.0.0.1:{port}")
-                .parse()
-                .expect("peer addr");
+            let addr: SocketAddr = format!("127.0.0.1:{port}").parse().expect("peer addr");
             (pid, addr)
         })
         .collect()
@@ -316,8 +362,8 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
         RoleArg::Voter => NodeRole::Voter,
         RoleArg::Standby => NodeRole::Standby,
     };
-    let standby_offload = role == NodeRole::Standby
-        || std::env::var("STANDBY").ok().as_deref() == Some("1");
+    let standby_offload =
+        role == NodeRole::Standby || std::env::var("STANDBY").ok().as_deref() == Some("1");
     let snapshot_mode = if standby_offload {
         SnapshotMode::StandbyOffload
     } else {
@@ -334,7 +380,10 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
         anyhow::bail!("voter --node-id must be in 1..={}", args.nodes);
     }
     if max_peer < args.nodes {
-        anyhow::bail!("--peer-nodes ({max_peer}) must be >= --nodes ({})", args.nodes);
+        anyhow::bail!(
+            "--peer-nodes ({max_peer}) must be >= --nodes ({})",
+            args.nodes
+        );
     }
     if max_peer < node_id {
         anyhow::bail!("--peer-nodes ({max_peer}) must be >= --node-id ({node_id})");
@@ -349,10 +398,11 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
     std::fs::create_dir_all(&args.data_dir)?;
 
     let peer_ids: Vec<u64> = peers.iter().map(|(id, _)| *id).collect();
-    let daisy_upstream = args
-        .daisy_upstream
-        .clone()
-        .or_else(|| std::env::var("DAISY_UPSTREAM").ok().filter(|s| !s.is_empty()));
+    let daisy_upstream = args.daisy_upstream.clone().or_else(|| {
+        std::env::var("DAISY_UPSTREAM")
+            .ok()
+            .filter(|s| !s.is_empty())
+    });
 
     let mut config = ClusterConfig::for_test(node_id, &peer_ids);
     config.peers = peers;
@@ -405,7 +455,9 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     if let Some((gid, e)) = last_err {
-        return Err(anyhow::anyhow!("create_group {gid} failed after retries: {e}"));
+        return Err(anyhow::anyhow!(
+            "create_group {gid} failed after retries: {e}"
+        ));
     }
 
     if role == NodeRole::Voter {
@@ -414,7 +466,12 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
         for &gid in &group_ids {
             match node.try_recover_from_standby_ads(gid).await {
                 Ok(outcome) => {
-                    info!(node_id, group = gid, ?outcome, "try_recover_from_standby_ads");
+                    info!(
+                        node_id,
+                        group = gid,
+                        ?outcome,
+                        "try_recover_from_standby_ads"
+                    );
                 }
                 Err(e) => {
                     warn!(node_id, group = gid, error = %e, "try_recover_from_standby_ads failed");
@@ -461,7 +518,10 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
     );
 
     if args.no_auto_propose || role == NodeRole::Standby {
-        info!(node_id, "skipping background propose_loop (standby or --no-auto-propose)");
+        info!(
+            node_id,
+            "skipping background propose_loop (standby or --no-auto-propose)"
+        );
     } else {
         tokio::spawn({
             let s = Arc::clone(&state);
@@ -680,7 +740,10 @@ async fn serve_admin(addr: SocketAddr, state: Arc<DemoState>) -> anyhow::Result<
         .route("/admin/standby_snapshot/:id", post(admin_standby_snapshot))
         .route("/admin/snapshot_ads", post(admin_post_snapshot_ad))
         .route("/admin/snapshot_ads", get(admin_get_snapshot_ads))
-        .route("/admin/add_standby/:group/:standby_id", post(admin_add_standby))
+        .route(
+            "/admin/add_standby/:group/:standby_id",
+            post(admin_add_standby),
+        )
         .route(
             "/admin/replicate_standby_snapshot/:group",
             post(admin_replicate_standby_snapshot),
@@ -959,9 +1022,8 @@ async fn admin_replicate_standby_snapshot(
     } else {
         match n.try_recover_from_standby_ads(group).await {
             Ok(out) => {
-                let mut v = serde_json::to_value(&out).unwrap_or_else(|_| {
-                    serde_json::json!({ "outcome": "unknown" })
-                });
+                let mut v = serde_json::to_value(&out)
+                    .unwrap_or_else(|_| serde_json::json!({ "outcome": "unknown" }));
                 if let Some(obj) = v.as_object_mut() {
                     obj.insert("ok".into(), serde_json::json!(true));
                 }
@@ -1105,9 +1167,8 @@ async fn admin_daisy_sync(
     };
     match n.sync_from_daisy_upstream(group).await {
         Ok(out) => {
-            let mut v = serde_json::to_value(&out).unwrap_or_else(|_| {
-                serde_json::json!({ "outcome": "unknown" })
-            });
+            let mut v = serde_json::to_value(&out)
+                .unwrap_or_else(|_| serde_json::json!({ "outcome": "unknown" }));
             if let Some(obj) = v.as_object_mut() {
                 obj.insert("ok".into(), serde_json::json!(true));
                 obj.insert("group".into(), serde_json::json!(group));
@@ -1405,12 +1466,10 @@ async fn shutdown_node(
         return Err(axum::http::StatusCode::NOT_FOUND);
     };
     info!(node_id = id, "admin: shutting down MultiRaft node");
-    node.shutdown()
-        .await
-        .map_err(|e| {
-            warn!(node_id = id, error = %e, "admin shutdown_node failed");
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    node.shutdown().await.map_err(|e| {
+        warn!(node_id = id, error = %e, "admin shutdown_node failed");
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     Ok(axum::Json(ShutdownNodeResp {
         node_id: id,
         ok: true,
@@ -1424,6 +1483,7 @@ struct BenchReport {
     groups: u64,
     ops: u64,
     concurrency: u64,
+    batch_size: u64,
     warmup_ops: u64,
     wall_ms: f64,
     tps: f64,
@@ -1464,8 +1524,23 @@ async fn run_bench(args: Args) -> anyhow::Result<()> {
         cfg.heartbeat_interval_ms = 50;
         cfg.election_timeout_min_ms = 150;
         cfg.election_timeout_max_ms = 300;
+        cfg.api_batch_linger_ms = args.bench_api_batch_linger_ms;
+        cfg.api_batch_capacity = args.bench_api_batch_capacity;
+        cfg.max_payload_entries = args.bench_max_payload_entries;
+        cfg.max_append_entries = args.bench_max_append_entries;
         if let Some(ref root) = data_root {
             cfg.data_dir = root.join(format!("node-{id}"));
+            cfg.file_log_coalesce_us = args.bench_file_coalesce_us;
+            cfg.file_log_sync_level = FileLogSyncLevel::from_u8(args.bench_file_sync_level)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--bench-file-sync-level must be 0|1|2, got {}",
+                        args.bench_file_sync_level
+                    )
+                })?;
+            cfg.file_log_stream_buf_bytes = args.bench_file_stream_buf;
+            cfg.file_log_stream_flush_ms = args.bench_file_stream_flush_ms;
+            cfg.file_log_hold_overlap = args.bench_file_hold_overlap;
             std::fs::create_dir_all(&cfg.data_dir)?;
         }
         configs.push(cfg);
@@ -1493,23 +1568,47 @@ async fn run_bench(args: Args) -> anyhow::Result<()> {
 
     let ops = args.bench_ops.max(1);
     let concurrency = args.bench_concurrency.max(1);
+    let batch_size = args.bench_batch_size.max(1) as usize;
+    if args.bench_file_log && concurrency == 1 && batch_size == 1 {
+        warn!(
+            "file bench: sequential single-entry is disk-bound (~2–3k TPS); \
+             try --bench-batch-size 16 --bench-file-coalesce-us 50 or \
+             --bench-concurrency 4 --bench-batch-size 8 (see docs/perf.md M3b)"
+        );
+    }
     let mut latencies = Vec::with_capacity(ops as usize);
     let mut ok = 0u64;
     let mut err = 0u64;
     let wall = Instant::now();
 
     if concurrency == 1 {
-        for i in 0..ops {
-            let g = group_ids[(i as usize) % group_ids.len()];
-            let t0 = Instant::now();
-            match propose_bench(&nodes, g, CounterFsm::encode_add(1, idem)).await {
-                Ok(()) => {
-                    ok += 1;
-                    latencies.push(t0.elapsed().as_micros() as u64);
-                }
-                Err(_) => err += 1,
+        // Round-robin by *batch index* so batches spread across groups even when
+        // `batch_size % groups == 0` (plain `i % groups` would stick on group 0).
+        let mut i = 0u64;
+        let mut batch_idx = 0usize;
+        while i < ops {
+            let g = group_ids[batch_idx % group_ids.len()];
+            batch_idx += 1;
+            let n = ((ops - i) as usize).min(batch_size);
+            let mut payloads = Vec::with_capacity(n);
+            for _ in 0..n {
+                payloads.push(CounterFsm::encode_add(1, idem));
+                idem += 1;
             }
-            idem += 1;
+            let t0 = Instant::now();
+            match propose_batch_bench(&nodes, g, payloads).await {
+                Ok(()) => {
+                    ok += n as u64;
+                    let us = t0.elapsed().as_micros() as u64;
+                    // Attribute batch wall time evenly for percentile reporting.
+                    let per = us / n as u64;
+                    for _ in 0..n {
+                        latencies.push(per);
+                    }
+                }
+                Err(_) => err += n as u64,
+            }
+            i += n as u64;
         }
     } else {
         use tokio::sync::Mutex;
@@ -1521,32 +1620,43 @@ async fn run_bench(args: Args) -> anyhow::Result<()> {
         let group_ids = Arc::new(group_ids.clone());
         let mut handles = Vec::new();
         let per = ops / concurrency;
-        for _ in 0..concurrency {
+        // Pin each proposer to a group (`worker % groups`) so multi-group load
+        // runs in parallel instead of all workers aliasing onto the same gid.
+        for worker in 0..concurrency {
             let nodes = Arc::clone(&nodes);
             let group_ids = Arc::clone(&group_ids);
             let idem_lock = Arc::clone(&idem_lock);
             let lat_lock = Arc::clone(&lat_lock);
             let ok_c = Arc::clone(&ok_c);
             let err_c = Arc::clone(&err_c);
+            let sticky_gid = group_ids[(worker as usize) % group_ids.len()];
             handles.push(tokio::spawn(async move {
-                for _ in 0..per {
-                    let key = {
+                let mut done = 0u64;
+                while done < per {
+                    let n = ((per - done) as usize).min(batch_size);
+                    let mut payloads = Vec::with_capacity(n);
+                    {
                         let mut g = idem_lock.lock().await;
-                        let v = *g;
-                        *g += 1;
-                        v
-                    };
-                    let gid = group_ids[(key as usize) % group_ids.len()];
-                    let t0 = Instant::now();
-                    match propose_bench(&nodes, gid, CounterFsm::encode_add(1, key)).await {
-                        Ok(()) => {
-                            ok_c.fetch_add(1, Ordering::Relaxed);
-                            lat_lock.lock().await.push(t0.elapsed().as_micros() as u64);
-                        }
-                        Err(_) => {
-                            err_c.fetch_add(1, Ordering::Relaxed);
+                        for _ in 0..n {
+                            payloads.push(CounterFsm::encode_add(1, *g));
+                            *g += 1;
                         }
                     }
+                    let t0 = Instant::now();
+                    match propose_batch_bench(&nodes, sticky_gid, payloads).await {
+                        Ok(()) => {
+                            ok_c.fetch_add(n as u64, Ordering::Relaxed);
+                            let us = t0.elapsed().as_micros() as u64 / n.max(1) as u64;
+                            let mut lat = lat_lock.lock().await;
+                            for _ in 0..n {
+                                lat.push(us);
+                            }
+                        }
+                        Err(_) => {
+                            err_c.fetch_add(n as u64, Ordering::Relaxed);
+                        }
+                    }
+                    done += n as u64;
                 }
             }));
         }
@@ -1556,7 +1666,6 @@ async fn run_bench(args: Args) -> anyhow::Result<()> {
         ok = ok_c.load(Ordering::Relaxed);
         err = err_c.load(Ordering::Relaxed);
         latencies = lat_lock.lock().await.clone();
-        // nodes moved into Arc; drop via Arc
         let _ = nodes;
     }
 
@@ -1578,6 +1687,7 @@ async fn run_bench(args: Args) -> anyhow::Result<()> {
         groups: args.groups.max(1),
         ops,
         concurrency,
+        batch_size: batch_size as u64,
         warmup_ops: warmup,
         wall_ms,
         tps,
@@ -1593,20 +1703,24 @@ async fn run_bench(args: Args) -> anyhow::Result<()> {
 }
 
 async fn propose_bench(nodes: &[MultiRaft], group: u64, data: Vec<u8>) -> anyhow::Result<()> {
+    propose_batch_bench(nodes, group, vec![data]).await
+}
+
+async fn propose_batch_bench(
+    nodes: &[MultiRaft],
+    group: u64,
+    payloads: Vec<Vec<u8>>,
+) -> anyhow::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        for n in nodes {
-            if n.is_leader(group) {
-                match n.propose(group, data.clone()).await {
-                    Ok(_) => return Ok(()),
-                    Err(MultiRaftError::NotLeader { .. }) => {}
-                    Err(e) => return Err(e.into()),
-                }
-            }
-        }
-        if Instant::now() >= deadline {
-            anyhow::bail!("propose timeout group={group}");
+    while Instant::now() < deadline {
+        if let Some(n) = nodes.iter().find(|n| n.is_leader(group)) {
+            return n
+                .propose_batch(group, payloads)
+                .await
+                .map(|_| ())
+                .map_err(Into::into);
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+    anyhow::bail!("propose timeout group={group}")
 }

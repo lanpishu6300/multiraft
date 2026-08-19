@@ -89,7 +89,7 @@ impl SnapshotCatalog {
         write_fsync(&dir.join("sha256"), format!("{sha256_hex}\n").as_bytes())?;
 
         // fsync directory for durability of the new entry name.
-        fsync_dir(&dir)?;
+        crate::durability::sync_dir(&dir)?;
 
         self.prune(group)?;
 
@@ -207,11 +207,6 @@ fn write_fsync(path: &Path, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-fn fsync_dir(path: &Path) -> io::Result<()> {
-    let f = fs::File::open(path)?;
-    f.sync_all()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,7 +225,10 @@ mod tests {
         let e2 = catalog
             .write(0, 20, 2, "20-2", b"hello-20")
             .expect("write 2");
-        assert_eq!(catalog.latest(0).unwrap().unwrap().snapshot_id, e2.snapshot_id);
+        assert_eq!(
+            catalog.latest(0).unwrap().unwrap().snapshot_id,
+            e2.snapshot_id
+        );
 
         let _e3 = catalog
             .write(0, 30, 3, "30-3", b"hello-30")

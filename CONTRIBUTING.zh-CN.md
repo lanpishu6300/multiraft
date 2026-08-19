@@ -44,6 +44,15 @@ cargo test --workspace
 - `docs: …`
 - `chore: …`
 
+不要在提交里加编辑器 / AI 工具的 `Co-authored-by` 等归属行。克隆后建议：
+
+```bash
+./scripts/install-git-hooks.sh
+./scripts/check-no-ai-traces.sh
+```
+
+文档尽量中英成对（`foo.md` + `foo.zh-CN.md`）。表述具体即可，仓库与将推送的历史中不要留下工具 / agent 归属痕迹。
+
 ## 许可
 
 贡献即表示同意以 **Apache License 2.0** 授权（见 `LICENSE`）。

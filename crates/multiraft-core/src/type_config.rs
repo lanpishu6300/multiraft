@@ -87,7 +87,8 @@ pub mod typ {
 
     pub type Infallible = openraft::errors::Infallible;
     pub type Fatal = openraft::errors::Fatal<TypeConfig>;
-    pub type RaftError<E = openraft::errors::Infallible> = openraft::errors::RaftError<TypeConfig, E>;
+    pub type RaftError<E = openraft::errors::Infallible> =
+        openraft::errors::RaftError<TypeConfig, E>;
     pub type RPCError<E = openraft::errors::Infallible> = openraft::errors::RPCError<TypeConfig, E>;
 
     pub type ErrorSubject = openraft::ErrorSubject<TypeConfig>;
@@ -114,3 +115,29 @@ pub mod typ {
 
 /// Raft handle parameterized by the openraft state-machine store type.
 pub type Raft<SM> = openraft::Raft<TypeConfig, SM>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_new_display_and_serde() {
+        let req = Request::new(b"abc");
+        assert_eq!(req.data, b"abc");
+        assert_eq!(format!("{req}"), "Request(3 bytes)");
+        let s = serde_json::to_string(&req).unwrap();
+        let back: Request = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.data, b"abc");
+    }
+
+    #[test]
+    fn response_new_none_and_serde() {
+        let none = Response::none();
+        assert!(none.effects.is_empty());
+        let resp = Response::new(vec![1, 2]);
+        assert_eq!(resp.effects, vec![1, 2]);
+        let s = serde_json::to_string(&resp).unwrap();
+        let back: Response = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.effects, vec![1, 2]);
+    }
+}

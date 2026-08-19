@@ -44,6 +44,15 @@ Prefer Conventional Commits style:
 - `docs: …`
 - `chore: …`
 
+Do not add `Co-authored-by` (or similar) trailers for editor/AI tools. After clone:
+
+```bash
+./scripts/install-git-hooks.sh
+./scripts/check-no-ai-traces.sh
+```
+
+Docs are bilingual where applicable (`foo.md` + `foo.zh-CN.md`). Keep wording concrete; avoid tool/agent attribution in tree or history you push.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the **Apache License 2.0** (see `LICENSE`).

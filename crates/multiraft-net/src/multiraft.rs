@@ -27,14 +27,6 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use openraft::BasicNode;
-use openraft::ChangeMembers;
-use openraft::Config;
-use openraft::ReadPolicy;
-use openraft::async_runtime::WatchReceiver;
-use openraft::error::InitializeError;
-use openraft::error::RaftError;
-use openraft::type_config::TypeConfigExt;
 use crate::grpc::GrpcRouter;
 use crate::grpc::GrpcServer;
 use crate::network::GrpcNetworkFactory;
@@ -53,21 +45,30 @@ use multiraft_core::NodeRole;
 use multiraft_core::ProposeOk;
 use multiraft_core::RecoverOutcome;
 use multiraft_core::Request;
-use multiraft_core::STANDBY_SNAPSHOT_TRIGGER;
 use multiraft_core::SnapshotAdvertisement;
 use multiraft_core::SnapshotMode;
 use multiraft_core::StaleRead;
 use multiraft_core::TypeConfig;
+use multiraft_core::STANDBY_SNAPSHOT_TRIGGER;
 use multiraft_fsm::CounterFsm;
 use multiraft_fsm::StateMachine;
 use multiraft_store::CatalogEntry;
 use multiraft_store::FileLogStoreOf;
+use multiraft_store::FileLogStreamOptions;
 use multiraft_store::MemLogStore;
 use multiraft_store::Raft;
 use multiraft_store::SmOptions;
 use multiraft_store::SnapshotCatalog;
 use multiraft_store::StateMachineStore;
 use multiraft_store::TriggerCb;
+use openraft::async_runtime::WatchReceiver;
+use openraft::error::InitializeError;
+use openraft::error::RaftError;
+use openraft::type_config::TypeConfigExt;
+use openraft::BasicNode;
+use openraft::ChangeMembers;
+use openraft::Config;
+use openraft::ReadPolicy;
 
 type LeaderCb = Arc<dyn Fn(u64, Option<u64>) + Send + Sync + 'static>;
 type SnapshotReadyCb = Arc<dyn Fn(SnapshotAdvertisement) + Send + Sync + 'static>;
@@ -179,24 +180,16 @@ impl SharedFabric {
     }
 
     pub async fn start_node(&self, config: ClusterConfig) -> anyhow::Result<MultiRaft> {
-        MultiRaft::start_inner(
-            config,
-            self.router.clone(),
-            self.glue.clone(),
-            |_| CounterFsm::new(),
-        )
+        MultiRaft::start_inner(config, self.router.clone(), self.glue.clone(), |_| {
+            CounterFsm::new()
+        })
         .await
     }
 }
 
 enum NetBackend {
-    InProcess {
-        router: Router,
-        glue: ClusterGlue,
-    },
-    Grpc {
-        router: GrpcRouter,
-    },
+    InProcess { router: Router, glue: ClusterGlue },
+    Grpc { router: GrpcRouter },
 }
 
 /// Multi-Raft handle for one node (many groups).
@@ -429,13 +422,8 @@ impl<S: StateMachine> MultiRaft<S> {
             .fetch_snapshot_bytes(fetch_url)
             .await
             .map_err(MultiRaftError::Other)?;
-        self.install_durable_snapshot(
-            group,
-            fetched.last_index,
-            fetched.last_term,
-            fetched.data,
-        )
-        .await
+        self.install_durable_snapshot(group, fetched.last_index, fetched.last_term, fetched.data)
+            .await
     }
 
     /// Fetch snapshot bytes via chunked Range download (resume temp under data_dir / temp).
@@ -495,10 +483,7 @@ impl<S: StateMachine> MultiRaft<S> {
                 "sync_from_daisy_upstream: daisy_upstream_base not set"
             ))
         })?;
-        let url = format!(
-            "{}/snapshots/{group}/latest",
-            base.trim_end_matches('/')
-        );
+        let url = format!("{}/snapshots/{group}/latest", base.trim_end_matches('/'));
 
         let fetched = match self.fetch_snapshot_bytes(&url).await {
             Ok(f) => f,
@@ -536,9 +521,7 @@ impl<S: StateMachine> MultiRaft<S> {
                     &snapshot_id,
                     &fetched.data,
                 )
-                .map_err(|e| {
-                    MultiRaftError::Other(anyhow::anyhow!("daisy catalog write: {e}"))
-                })?;
+                .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("daisy catalog write: {e}")))?;
         } else {
             return Err(MultiRaftError::Other(anyhow::anyhow!(
                 "sync_from_daisy_upstream: SnapshotCatalog required (StandbyOffload + data_dir)"
@@ -850,7 +833,75 @@ impl<S: StateMachine> MultiRaft<S> {
         let raft = self
             .raft(group)
             .ok_or(MultiRaftError::UnknownGroup(group))?;
+        Self::client_write_one(&raft, data).await
+    }
 
+    /// Pipeline many proposes: **one Raft entry per payload**, concurrent `client_write`.
+    ///
+    /// Returns `Ok` only if **all** entries succeed. On any failure (including
+    /// [`MultiRaftError::NotLeader`]), returns that error — some entries may already
+    /// be committed; callers must use idempotency keys.
+    ///
+    /// Each `client_write` is polled concurrently via `try_join_all` so N quorum
+    /// waits overlap (deep pipeline). openraft `api_batch_*` may still merge
+    /// consecutive writes into fatter storage appends.
+    pub async fn propose_batch(
+        &self,
+        group: u64,
+        payloads: Vec<Vec<u8>>,
+    ) -> Result<Vec<ProposeOk>, MultiRaftError> {
+        if payloads.is_empty() {
+            return Ok(Vec::new());
+        }
+        let raft = self
+            .raft(group)
+            .ok_or(MultiRaftError::UnknownGroup(group))?;
+        futures::future::try_join_all(payloads.into_iter().map(|data| {
+            let raft = raft.clone();
+            async move { Self::client_write_one(&raft, data).await }
+        }))
+        .await
+    }
+
+    /// One Core API message for many payloads (fatter appends; shallower client
+    /// pipeline than [`Self::propose_batch`]).
+    pub async fn propose_many(
+        &self,
+        group: u64,
+        payloads: Vec<Vec<u8>>,
+    ) -> Result<Vec<ProposeOk>, MultiRaftError> {
+        if payloads.is_empty() {
+            return Ok(Vec::new());
+        }
+        let raft = self
+            .raft(group)
+            .ok_or(MultiRaftError::UnknownGroup(group))?;
+        let n = payloads.len();
+        let mut stream = raft
+            .client_write_many(payloads.into_iter().map(Request::new))
+            .await
+            .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("client_write_many: {e}")))?;
+        let mut out = Vec::with_capacity(n);
+        while let Some(item) = futures::StreamExt::next(&mut stream).await {
+            let result = item.map_err(|e| {
+                MultiRaftError::Other(anyhow::anyhow!("client_write_many stream: {e}"))
+            })?;
+            match result {
+                Ok(resp) => out.push(ProposeOk {
+                    index: resp.log_id.index(),
+                    term: resp.log_id.committed_leader_id().term,
+                }),
+                Err(fwd) => {
+                    return Err(MultiRaftError::NotLeader {
+                        hint: fwd.leader_id,
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    async fn client_write_one(raft: &Raft<S>, data: Vec<u8>) -> Result<ProposeOk, MultiRaftError> {
         match raft.client_write(Request::new(data)).await {
             Ok(resp) => Ok(ProposeOk {
                 index: resp.log_id.index(),
@@ -1082,6 +1133,22 @@ impl<S: StateMachine> MultiRaft<S> {
             // Wipe/restart chaos and follower catch-up can present a shorter log
             // than the leader last matched; without this openraft panics.
             allow_log_reversion: Some(true),
+            api_batch_linger_ms: self.config.api_batch_linger_ms,
+            api_batch_capacity: if self.config.api_batch_capacity == 0 {
+                4096
+            } else {
+                self.config.api_batch_capacity
+            },
+            max_append_entries: Some(if self.config.max_append_entries == 0 {
+                4096
+            } else {
+                self.config.max_append_entries
+            }),
+            max_payload_entries: if self.config.max_payload_entries == 0 {
+                300
+            } else {
+                self.config.max_payload_entries
+            },
             ..Default::default()
         };
         let config = Arc::new(
@@ -1122,9 +1189,7 @@ impl<S: StateMachine> MultiRaft<S> {
                         Ok(entry) => {
                             let fetch_url = rt
                                 .admin_advertise_addr
-                                .map(|addr| {
-                                    format!("http://{addr}/snapshots/{gid}/latest")
-                                })
+                                .map(|addr| format!("http://{addr}/snapshots/{gid}/latest"))
                                 .unwrap_or_default();
                             let ad = SnapshotAdvertisement {
                                 group: gid,
@@ -1180,9 +1245,17 @@ impl<S: StateMachine> MultiRaft<S> {
                     .await
                 } else {
                     let dir = self.config.data_dir.join(format!("group-{group}"));
-                    let log_store = FileLogStoreOf::open(&dir).map_err(|e| {
-                        MultiRaftError::Other(anyhow::anyhow!("open file log: {e}"))
-                    })?;
+                    let log_store = FileLogStoreOf::open_with_full_options(
+                        &dir,
+                        self.config.file_log_coalesce_us,
+                        self.config.file_log_sync_level,
+                        FileLogStreamOptions {
+                            stream_buf_bytes: self.config.file_log_stream_buf_bytes,
+                            stream_flush_ms: self.config.file_log_stream_flush_ms,
+                            hold_overlap: self.config.file_log_hold_overlap,
+                        },
+                    )
+                    .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("open file log: {e}")))?;
                     openraft::Raft::new(
                         self.node_id,
                         config,
@@ -1207,9 +1280,17 @@ impl<S: StateMachine> MultiRaft<S> {
                     .await
                 } else {
                     let dir = self.config.data_dir.join(format!("group-{group}"));
-                    let log_store = FileLogStoreOf::open(&dir).map_err(|e| {
-                        MultiRaftError::Other(anyhow::anyhow!("open file log: {e}"))
-                    })?;
+                    let log_store = FileLogStoreOf::open_with_full_options(
+                        &dir,
+                        self.config.file_log_coalesce_us,
+                        self.config.file_log_sync_level,
+                        FileLogStreamOptions {
+                            stream_buf_bytes: self.config.file_log_stream_buf_bytes,
+                            stream_flush_ms: self.config.file_log_stream_flush_ms,
+                            hold_overlap: self.config.file_log_hold_overlap,
+                        },
+                    )
+                    .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("open file log: {e}")))?;
                     openraft::Raft::new(
                         self.node_id,
                         config,

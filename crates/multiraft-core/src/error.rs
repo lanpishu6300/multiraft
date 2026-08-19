@@ -37,3 +37,28 @@ pub struct StaleRead<T> {
     pub applied_index: u64,
     pub applied_term: u64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_display_and_stale_read() {
+        let e = MultiRaftError::NotLeader { hint: Some(2) };
+        assert!(e.to_string().contains("not leader"));
+        assert!(MultiRaftError::UnknownGroup(7).to_string().contains("7"));
+        assert!(MultiRaftError::StaleQueriesDisabled
+            .to_string()
+            .contains("stale"));
+        let other: MultiRaftError = anyhow::anyhow!("boom").into();
+        assert!(other.to_string().contains("boom"));
+        let _ = format!("{:?}", ProposeOk { index: 1, term: 1 });
+        let sr = StaleRead {
+            value: 42u64,
+            applied_index: 3,
+            applied_term: 1,
+        };
+        assert_eq!(sr.value, 42);
+        let _ = format!("{sr:?}");
+    }
+}
