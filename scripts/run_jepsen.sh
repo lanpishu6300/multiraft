@@ -18,10 +18,10 @@ DATA="${DATA_DIR:-$ROOT/.jepsen-data}"
 TIME_LIMIT="${JEPSEN_TIME_LIMIT:-30}"
 CONCURRENCY="${JEPSEN_CONCURRENCY:-6}"
 
-# Prefer Java 17 for Jepsen if present (Java 22 also OK when deps resolve).
+# Prefer Java 17 for Jepsen (override with JAVA17_HOME or JAVA_HOME).
 if [[ -z "${JAVA_HOME:-}" ]]; then
-  if [[ -d "/Users/lan/Library/Java/JavaVirtualMachines/graalvm-jdk-17.0.10/Contents/Home" ]]; then
-    export JAVA_HOME="/Users/lan/Library/Java/JavaVirtualMachines/graalvm-jdk-17.0.10/Contents/Home"
+  if [[ -n "${JAVA17_HOME:-}" && -d "${JAVA17_HOME}" ]]; then
+    export JAVA_HOME="${JAVA17_HOME}"
   elif command -v /usr/libexec/java_home >/dev/null 2>&1; then
     if JH="$(/usr/libexec/java_home -v 17 2>/dev/null)"; then
       export JAVA_HOME="$JH"
@@ -34,6 +34,20 @@ fi
 
 log() { printf '[jepsen] %s\n' "$*"; }
 fail() { printf '[jepsen] FAIL: %s\n' "$*" >&2; exit 1; }
+
+# Comma-separated voter ids 1..NODES for `lein run test --nodes`.
+jepsen_nodes_arg() {
+  local list="" id=1
+  while [[ "$id" -le "$NODES" ]]; do
+    if [[ -n "$list" ]]; then
+      list="${list},${id}"
+    else
+      list="${id}"
+    fi
+    id=$((id + 1))
+  done
+  echo "$list"
+}
 
 log "disk:"
 df -h "$ROOT" | tail -1 || df -h . | tail -1 || true
@@ -105,14 +119,15 @@ while ! admin_ready; do
 done
 log "admins ready"
 
-log "running Jepsen (time-limit=${TIME_LIMIT}s concurrency=${CONCURRENCY})"
+JEPSEN_NODE_LIST="$(jepsen_nodes_arg)"
+log "running Jepsen (nodes=${JEPSEN_NODE_LIST} time-limit=${TIME_LIMIT}s concurrency=${CONCURRENCY})"
 cd "$ROOT/jepsen/multiraft"
 # Fresh store each smoke run.
 rm -rf store
 set +e
 lein run test -- \
   --no-ssh \
-  --nodes "1,2,3" \
+  --nodes "$JEPSEN_NODE_LIST" \
   --time-limit "$TIME_LIMIT" \
   --concurrency "$CONCURRENCY"
 LEIN_EXIT=$?
