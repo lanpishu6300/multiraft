@@ -31,6 +31,10 @@ STANDBY=1 ./scripts/run_jepsen.sh
 Clients only accept `"consistency":"linearizable"` reads; `"stale"` / `"local"` are
 treated as failures. The nemesis kills/restarts voters `1..NODES` only.
 
+`run_demo_cluster.sh` writes `$DATA_DIR/cluster.json` (admin URLs, ports, roles).
+Jepsen client/nemesis and the bash harness scripts read it when present; they
+fall back to `BASE_PORT` env + the canonical port formula otherwise.
+
 ## Manual
 
 ```bash

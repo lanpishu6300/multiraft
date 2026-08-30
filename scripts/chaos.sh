@@ -18,6 +18,8 @@ set -euo pipefail
 export PATH="${HOME}/.cargo/bin:${PATH}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=scripts/cluster_lib.sh
+. "$ROOT/scripts/cluster_lib.sh"
 BASE_PORT="${BASE_PORT:-22000}"
 GROUPS="${GROUPS:-5}"
 NODES="${NODES:-3}"
@@ -49,9 +51,7 @@ cleanup() {
 trap cleanup EXIT
 
 admin_url() {
-  local id="$1"
-  local port=$((BASE_PORT + 100 + id - 1))
-  echo "http://127.0.0.1:${port}"
+  DATA_DIR="$DATA" cluster_admin_url "$1"
 }
 
 http_get() {
@@ -92,33 +92,12 @@ start_cluster() {
 
 start_one_node() {
   local id="$1"
-  local node_data="$DATA/node-$id"
-  # Strings avoid Bash 3.2 `set -u` unbound empty-array expand.
-  local extra=""
-  local role_flag="--role"
-  local role_val="voter"
-  mkdir -p "$node_data"
-  if [[ "${JEPSEN:-0}" == "1" || "${NO_AUTO_PROPOSE:-0}" == "1" ]]; then
-    extra="--no-auto-propose"
-  fi
-  if [[ "$STANDBY" == "1" && "$id" -gt "$NODES" ]]; then
-    role_val="standby"
-    extra="--no-auto-propose"
-  fi
-  # shellcheck disable=SC2086
-  "$ROOT/target/debug/multiraft-demo" \
-    --mode node \
-    --node-id "$id" \
-    --nodes "$NODES" \
-    --peer-nodes "${PEER_NODES:-$NODES}" \
-    "$role_flag" "$role_val" \
-    --base-port "$BASE_PORT" \
-    --groups "$GROUPS" \
-    --data-dir "$node_data" \
-    $extra \
-    >"$DATA/node-$id.log" 2>&1 &
-  echo $! >"$DATA/node-$id.pid"
-  log "restarted node ${id} --role ${role_val} pid=$(cat "$DATA/node-$id.pid")"
+  DATA_DIR="$DATA" BASE_PORT="$BASE_PORT" GROUPS="$GROUPS" NODES="$NODES" \
+    PEER_NODES="${PEER_NODES:-$NODES}" STANDBY="$STANDBY" \
+    JEPSEN="${JEPSEN:-0}" NO_AUTO_PROPOSE="${NO_AUTO_PROPOSE:-0}" \
+    MULTIRAFT_ROOT="$ROOT" \
+    "$ROOT/scripts/start_one_node.sh" "$id"
+  log "restarted node ${id} pid=$(cat "$DATA/node-$id.pid")"
 }
 
 readd_standby() {

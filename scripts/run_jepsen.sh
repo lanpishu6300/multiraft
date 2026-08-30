@@ -8,6 +8,9 @@ export PATH="${HOME}/.cargo/bin:${HOME}/bin:${PATH}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# shellcheck source=scripts/cluster_lib.sh
+. "$ROOT/scripts/cluster_lib.sh"
+
 BASE_PORT="${BASE_PORT:-23000}"
 # Prefer JEPSEN_GROUPS so ambient GROUPS from chaos/acceptance does not leak in.
 GROUPS="${JEPSEN_GROUPS:-1}"
@@ -98,10 +101,11 @@ export MULTIRAFT_ROOT="$ROOT"
 "$ROOT/scripts/run_demo_cluster.sh"
 
 admin_ready() {
-  local id=1 port
+  local id=1 url
+  export DATA_DIR="$DATA"
   while [[ "$id" -le "$NODES" ]]; do
-    port=$((BASE_PORT + 100 + id - 1))
-    if curl -fsS --max-time 2 "http://127.0.0.1:${port}/groups/0/value" >/dev/null 2>&1; then
+    url="$(cluster_admin_url "$id")"
+    if curl -fsS --max-time 2 "${url}/groups/0/value" >/dev/null 2>&1; then
       return 0
     fi
     id=$((id + 1))
