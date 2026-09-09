@@ -2,26 +2,23 @@
   "HTTP client against multiraft-demo admin endpoints."
   (:require [cheshire.core :as json]
             [clj-http.client :as http]
-            [jepsen.client :as client])
+            [jepsen.client :as client]
+            [jepsen.multiraft.cluster :as cluster])
   (:import (java.net ConnectException SocketTimeoutException)))
 
 (defn base-port
-  "Raft base port from test map or BASE_PORT env (default 23000)."
+  "Raft base port from cluster descriptor, test map, or BASE_PORT env."
   [test]
-  (or (:base-port test)
-      (some-> (System/getenv "BASE_PORT") Integer/parseInt)
-      23000))
+  (cluster/base-port test))
 
 (defn admin-url
-  "Admin HTTP for node id string/number: base+100+id-1."
+  "Admin HTTP for node id string/number."
   [test node]
-  (let [id (if (string? node) (Integer/parseInt node) (int node))
-        port (+ (base-port test) 100 id -1)]
-    (str "http://127.0.0.1:" port)))
+  (cluster/admin-url test node))
 
 (defn nodes
   [test]
-  (or (:nodes test) ["1" "2" "3"]))
+  (cluster/voter-ids test))
 
 (defn- parse-body
   [resp]

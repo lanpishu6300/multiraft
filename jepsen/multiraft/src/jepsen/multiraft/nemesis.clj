@@ -2,15 +2,15 @@
   "Local process kill/restart nemesis (no SSH).
 
   Reads $DATA/node-$id.pid (or :data-dir from test), kill -9, then restarts
-  multiraft-demo with the same flags as scripts/chaos.sh start_one_node."
+  multiraft-demo via scripts/start_one_node.sh (shared with chaos/acceptance)."
   (:require [clojure.java.shell :as shell]
             [clojure.string :as str]
             [clojure.tools.logging :refer [info warn]]
             [jepsen
              [generator :as gen]
-             [nemesis :as nemesis]])
-  (:import (java.io File)
-           (java.lang ProcessBuilder)))
+             [nemesis :as nemesis]]
+            [jepsen.multiraft.cluster :as cluster])
+  (:import (java.io File)))
 
 (defn env-or
   [k default]
@@ -18,10 +18,7 @@
 
 (defn data-dir
   [test]
-  (or (:data-dir test)
-      (System/getenv "DATA_DIR")
-      (System/getenv "DATA")
-      ".jepsen-data"))
+  (cluster/data-dir test))
 
 (defn demo-bin
   [test]
@@ -31,9 +28,7 @@
 
 (defn base-port
   [test]
-  (or (:base-port test)
-      (some-> (System/getenv "BASE_PORT") Integer/parseInt)
-      23000))
+  (cluster/base-port test))
 
 (defn groups
   [test]
@@ -93,39 +88,26 @@
 
 (defn- start-node!
   [test id]
-  (let [bin (demo-bin test)
-        data (str (data-dir test) "/node-" id)
-        log (str (data-dir test) "/node-" id ".log")
-        pidf (pid-file test id)
-        bp (str (base-port test))
-        gs (str (groups test))
-        ns (str (node-count test))
-        _ (doto (File. data) (.mkdirs))
-        logf (File. log)
-        ;; Only restart voters here; Standby (id > node-count) is out of band.
-        peer-nodes (or (some-> (System/getenv "PEER_NODES") Integer/parseInt)
-                       (if (= "1" (System/getenv "STANDBY"))
-                         (inc (Integer/parseInt ns))
-                         (Integer/parseInt ns)))
-        args ["--mode" "node"
-              "--node-id" (str id)
-              "--nodes" ns
-              "--peer-nodes" (str peer-nodes)
-              "--role" "voter"
-              "--base-port" bp
-              "--groups" gs
-              "--data-dir" data
-              "--no-auto-propose"]
-        pb (doto (ProcessBuilder. ^java.util.List (vec (cons bin args)))
-             (.redirectOutput logf)
-             (.redirectError logf))]
-    (info "nemesis restart voter" id "bin" bin)
+  (let [root (env-or "MULTIRAFT_ROOT" ".")
+        script (str root "/scripts/start_one_node.sh")
+        data (data-dir test)]
+    (info "nemesis restart voter" id "via" script)
     (try
-      (let [proc (.start pb)
-            pid (.pid proc)]
-        (spit pidf (str pid))
+      (let [result (shell/sh "bash" script (str id) "voter"
+                             :dir root
+                             :env (merge (into {} (System/getenv))
+                                         {"DATA_DIR" data
+                                          "DATA" data
+                                          "DEMO_BIN" (demo-bin test)
+                                          "MULTIRAFT_ROOT" root
+                                          "JEPSEN" (or (System/getenv "JEPSEN") "0")
+                                          "NO_AUTO_PROPOSE" (or (System/getenv "NO_AUTO_PROPOSE") "1")}))]
+        (when (not= 0 (:exit result))
+          (warn "nemesis restart script failed" (:err result)))
         (Thread/sleep 500)
-        {:started id :pid pid})
+        (if-let [pid (read-pid test id)]
+          {:started id :pid pid}
+          {:started id :error "missing pid after restart"}))
       (catch Throwable t
         (warn "nemesis restart failed" (.getMessage t))
         {:started id :error (.getMessage t)}))))
