@@ -20,6 +20,7 @@ BASE_PORT="${BASE_PORT:-21000}"
 GROUPS="${GROUPS:-10}"
 NODES="${NODES:-3}"
 DATA="${DATA_DIR:-$ROOT/.demo-data}"
+export DATA_DIR="$DATA"
 STANDBY="${STANDBY:-0}"
 DAISY="${DAISY:-0}"
 if [[ "$STANDBY" == "2" ]]; then
@@ -174,3 +175,9 @@ if [[ "$DAISY" == "1" ]]; then
 fi
 
 echo "  metrics: http://127.0.0.1:$((BASE_PORT + 100))/metrics/links"
+
+# shellcheck source=scripts/cluster_lib.sh
+. "$ROOT/scripts/cluster_lib.sh"
+export DEMO_BIN="$BIN"
+cluster_write_descriptor
+echo "  descriptor: $DATA/cluster.json"
