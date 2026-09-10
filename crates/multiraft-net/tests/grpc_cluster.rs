@@ -90,4 +90,11 @@ async fn grpc_three_node_propose() {
         link_sum <= 6,
         "3 nodes × ≤2 outbound peers → sum ≤ 6, got {link_sum}"
     );
+
+    for n in &nodes {
+        match n.try_router() {
+            Err(multiraft_core::MultiRaftError::InProcessRouterUnavailable) => {}
+            other => panic!("gRPC node must not expose in-process router: {other:?}"),
+        }
+    }
 }

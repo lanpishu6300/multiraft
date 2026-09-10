@@ -174,8 +174,8 @@ fn ceiling_phases() {
             let t0 = Instant::now();
             for _ in 1..=ops {
                 let t = Instant::now();
-                let bytes = encode(&fake);
-                let _: FakeAe = decode(&bytes);
+                let bytes = encode(&fake).expect("encode");
+                let _: FakeAe = decode(&bytes).expect("decode");
                 lats.push(t.elapsed().as_micros() as u64);
             }
             report("D_codec_roundtrip", ops, t0.elapsed(), &mut lats);

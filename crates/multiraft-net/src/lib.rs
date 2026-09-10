@@ -40,11 +40,37 @@ pub use standby_throttle::StandbyThrottle;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-/// Compact binary Raft RPC encoding (`bincode`).
-pub fn encode<T: Serialize>(t: T) -> Vec<u8> {
-    bincode::serialize(&t).expect("raft encode")
+/// bincode failure on the gRPC / wire codec (library paths never panic).
+#[derive(Debug, thiserror::Error)]
+pub enum CodecError {
+    #[error("raft encode: {0}")]
+    Encode(bincode::Error),
+    #[error("raft decode: {0}")]
+    Decode(bincode::Error),
 }
 
-pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> T {
-    bincode::deserialize(bytes).expect("raft decode")
+/// Compact binary Raft RPC encoding (`bincode`).
+pub fn encode<T: Serialize>(t: T) -> Result<Vec<u8>, CodecError> {
+    bincode::serialize(&t).map_err(CodecError::Encode)
+}
+
+pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, CodecError> {
+    bincode::deserialize(bytes).map_err(CodecError::Decode)
+}
+
+#[cfg(test)]
+mod codec_tests {
+    use super::*;
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let bytes = encode(42u32).expect("encode");
+        assert_eq!(decode::<u32>(&bytes).expect("decode"), 42);
+    }
+
+    #[test]
+    fn decode_garbage_returns_err() {
+        let err = decode::<u32>(&[0xff, 0xff]).expect_err("garbage must fail");
+        assert!(err.to_string().contains("decode"));
+    }
 }

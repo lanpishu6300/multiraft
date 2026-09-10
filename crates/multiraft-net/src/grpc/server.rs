@@ -71,7 +71,8 @@ pub(crate) async fn demux_raft_call<S: StateMachine>(
             None => {
                 let payload = encode::<Result<(), typ::RaftError>>(Err(
                     typ::RaftError::Fatal(openraft::error::Fatal::Stopped),
-                ));
+                ))
+                .map_err(|e| Status::internal(e.to_string()))?;
                 return Ok(Response::new(RaftResponse { payload }));
             }
         }
@@ -88,7 +89,8 @@ pub(crate) async fn demux_raft_call<S: StateMachine>(
                 openraft::error::Fatal::Stopped,
             )))
         }
-    };
+    }
+    .map_err(|e| Status::internal(e.to_string()))?;
 
     Ok(Response::new(RaftResponse { payload: res }))
 }

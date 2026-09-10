@@ -16,6 +16,10 @@ pub enum MultiRaftError {
     #[error("stale queries disabled (set ClusterConfig::enable_stale_queries)")]
     StaleQueriesDisabled,
 
+    /// Returned when asking for the in-process Router on a gRPC-backed node.
+    #[error("in-process router is only available for MultiRaft::start / start_cluster")]
+    InProcessRouterUnavailable,
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -52,6 +56,8 @@ mod tests {
             .contains("stale"));
         let other: MultiRaftError = anyhow::anyhow!("boom").into();
         assert!(other.to_string().contains("boom"));
+        let backend = MultiRaftError::InProcessRouterUnavailable;
+        assert!(backend.to_string().contains("in-process"));
         let _ = format!("{:?}", ProposeOk { index: 1, term: 1 });
         let sr = StaleRead {
             value: 42u64,

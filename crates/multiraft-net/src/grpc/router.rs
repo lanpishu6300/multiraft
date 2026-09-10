@@ -149,7 +149,7 @@ impl GrpcRouter {
         let channel = self.channel_for(to_node).await?;
         let mut client = RaftServiceClient::new(channel);
 
-        let encoded_req = encode(&req);
+        let encoded_req = encode(&req).map_err(|e| Unreachable::new(&GrpcError(e.to_string())))?;
         tracing::debug!(
             to_node,
             to_group,
@@ -176,7 +176,8 @@ impl GrpcRouter {
             "grpc resp"
         );
 
-        let res = decode::<Result<Resp, RaftError>>(&resp_bytes);
+        let res = decode::<Result<Resp, RaftError>>(&resp_bytes)
+            .map_err(|e| Unreachable::new(&GrpcError(e.to_string())))?;
         res.map_err(|e| Unreachable::new(&GrpcError(e.to_string())))
     }
 }

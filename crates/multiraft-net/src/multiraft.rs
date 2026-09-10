@@ -1017,13 +1017,11 @@ impl<S: StateMachine> MultiRaft<S> {
         self.node_id
     }
 
-    /// In-process shared [`Router`] (panics if this node was started with gRPC).
-    pub fn router(&self) -> &Router {
+    /// In-process shared [`Router`]. gRPC nodes return [`MultiRaftError::InProcessRouterUnavailable`].
+    pub fn try_router(&self) -> Result<&Router, MultiRaftError> {
         match &self.net {
-            NetBackend::InProcess { router, .. } => router,
-            NetBackend::Grpc { .. } => {
-                panic!("router() is only available for in-process MultiRaft::start / start_cluster")
-            }
+            NetBackend::InProcess { router, .. } => Ok(router),
+            NetBackend::Grpc { .. } => Err(MultiRaftError::InProcessRouterUnavailable),
         }
     }
 

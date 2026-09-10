@@ -14,18 +14,27 @@ use multiraft_core::typ::*;
 use multiraft_fsm::StateMachine;
 use multiraft_store::Raft;
 
-pub async fn vote<S: StateMachine>(raft: &Raft<S>, req: &[u8]) -> Vec<u8> {
-    let res = raft.vote(decode(req)).await;
+pub async fn vote<S: StateMachine>(
+    raft: &Raft<S>,
+    req: &[u8],
+) -> Result<Vec<u8>, crate::CodecError> {
+    let res = raft.vote(decode(req)?).await;
     encode(res)
 }
 
-pub async fn append<S: StateMachine>(raft: &Raft<S>, req: &[u8]) -> Vec<u8> {
-    let res = raft.append_entries(decode(req)).await;
+pub async fn append<S: StateMachine>(
+    raft: &Raft<S>,
+    req: &[u8],
+) -> Result<Vec<u8>, crate::CodecError> {
+    let res = raft.append_entries(decode(req)?).await;
     encode(res)
 }
 
-pub async fn snapshot<S: StateMachine>(raft: &Raft<S>, req: &[u8]) -> Vec<u8> {
-    let (vote, snapshot_meta, snapshot_data): (Vote, SnapshotMeta, Vec<u8>) = decode(req);
+pub async fn snapshot<S: StateMachine>(
+    raft: &Raft<S>,
+    req: &[u8],
+) -> Result<Vec<u8>, crate::CodecError> {
+    let (vote, snapshot_meta, snapshot_data): (Vote, SnapshotMeta, Vec<u8>) = decode(req)?;
     let snapshot = Snapshot {
         meta: snapshot_meta,
         snapshot: Cursor::new(snapshot_data),
@@ -37,8 +46,11 @@ pub async fn snapshot<S: StateMachine>(raft: &Raft<S>, req: &[u8]) -> Vec<u8> {
     encode(res)
 }
 
-pub async fn transfer_leader<S: StateMachine>(raft: &Raft<S>, req: &[u8]) -> Vec<u8> {
-    let transfer_req: TransferLeaderRequest<multiraft_core::TypeConfig> = decode(req);
+pub async fn transfer_leader<S: StateMachine>(
+    raft: &Raft<S>,
+    req: &[u8],
+) -> Result<Vec<u8>, crate::CodecError> {
+    let transfer_req: TransferLeaderRequest<multiraft_core::TypeConfig> = decode(req)?;
     let res: Result<TransferLeaderResponse<multiraft_core::TypeConfig>, RaftError> = raft
         .handle_transfer_leader(transfer_req)
         .await

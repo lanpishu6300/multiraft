@@ -109,3 +109,11 @@ async fn propose_after_shutdown_errors() {
         other => panic!("expected UnknownGroup or Other, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn try_router_ok_in_process() {
+    let peer_ids = [1u64];
+    let configs = vec![ClusterConfig::for_test(1, &peer_ids)];
+    let nodes = MultiRaft::start_cluster(configs).await.expect("start");
+    assert!(nodes[0].try_router().is_ok());
+}
