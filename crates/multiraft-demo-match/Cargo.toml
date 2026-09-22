@@ -1,0 +1,19 @@
+[package]
+name = "multiraft-demo-match"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+multiraft-core = { path = "../multiraft-core" }
+multiraft-net = { path = "../multiraft-net" }
+multiraft-fsm = { path = "../multiraft-fsm" }
+match-raft-fsm = { path = "../../../match-rust/crates/match-raft-fsm" }
+match-core-hp = { path = "../../../match-rust/crates/match-core-hp" }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"

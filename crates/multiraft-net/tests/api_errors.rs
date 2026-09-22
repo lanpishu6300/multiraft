@@ -40,10 +40,10 @@ async fn create_group_empty_members_errors() {
         .expect_err("empty members");
 
     match err {
-        MultiRaftError::Other(e) => {
+        MultiRaftError::InvalidArgument(s) => {
             assert!(
-                e.to_string().contains("at least one member"),
-                "unexpected: {e}"
+                s.contains("at least one member"),
+                "unexpected: {s}"
             );
         }
         other => panic!("expected Other, got {other:?}"),
@@ -63,8 +63,7 @@ async fn create_group_local_not_in_members_errors() {
         .expect_err("local not in members");
 
     match err {
-        MultiRaftError::Other(e) => {
-            let s = e.to_string();
+        MultiRaftError::InvalidArgument(s) => {
             assert!(
                 s.contains("not in members"),
                 "unexpected: {s}"
@@ -105,8 +104,8 @@ async fn propose_after_shutdown_errors() {
         .expect_err("propose after shutdown");
 
     match err {
-        MultiRaftError::UnknownGroup(_) | MultiRaftError::Other(_) => {}
-        other => panic!("expected UnknownGroup or Other, got {other:?}"),
+        MultiRaftError::UnknownGroup(_) | MultiRaftError::Operation(_) => {}
+        other => panic!("expected UnknownGroup or Operation, got {other:?}"),
     }
 }
 

@@ -237,6 +237,30 @@ impl MultiRaft<CounterFsm> {
 }
 
 impl<S: StateMachine> MultiRaft<S> {
+    /// Start N nodes sharing one [`Router`] with a **custom FSM factory**
+    /// (in-process multi-node harness for downstream FSM integration, e.g. matching engine).
+    ///
+    /// `SocketAddr` peers in each config are unused; nodes are linked via the shared router.
+    /// Each node's groups are created later via [`Self::create_group`].
+    pub async fn start_cluster_with<F>(
+        configs: Vec<ClusterConfig>,
+        make_fsm: F,
+    ) -> anyhow::Result<Vec<Self>>
+    where
+        F: Fn(GroupId) -> S + Send + Sync + 'static + Clone,
+    {
+        let fabric = SharedFabric::new();
+        let mut nodes = Vec::with_capacity(configs.len());
+        for config in configs {
+            let f = make_fsm.clone();
+            nodes.push(
+                MultiRaft::start_inner(config, fabric.router.clone(), fabric.glue.clone(), f)
+                    .await?,
+            );
+        }
+        Ok(nodes)
+    }
+
     async fn start_inner<F>(
         config: ClusterConfig,
         router: Router,
@@ -323,14 +347,14 @@ impl<S: StateMachine> MultiRaft<S> {
     /// the local raft without calling `initialize`; join via [`Self::add_standby`].
     pub async fn create_group(&self, group: u64, members: &[u64]) -> Result<(), MultiRaftError> {
         if members.is_empty() {
-            return Err(MultiRaftError::Other(anyhow::anyhow!(
-                "create_group requires at least one member"
-            )));
+            return Err(MultiRaftError::invalid_arg(
+                "create_group requires at least one member",
+            ));
         }
 
         let is_standby = self.config.role == NodeRole::Standby;
         if !is_standby && !members.contains(&self.node_id) {
-            return Err(MultiRaftError::Other(anyhow::anyhow!(
+            return Err(MultiRaftError::invalid_arg(format!(
                 "local node {} is not in members {:?}",
                 self.node_id,
                 members
@@ -398,7 +422,7 @@ impl<S: StateMachine> MultiRaft<S> {
                 if msg.contains("configuration change") {
                     return Err(transient_membership_err("add_learner", &e));
                 }
-                Err(MultiRaftError::Other(anyhow::anyhow!("add_learner: {e}")))
+                Err(MultiRaftError::operation(format!("add_learner: {e}")))
             }
         }
     }
@@ -425,7 +449,7 @@ impl<S: StateMachine> MultiRaft<S> {
         let fetched = self
             .fetch_snapshot_bytes(fetch_url)
             .await
-            .map_err(MultiRaftError::Other)?;
+            .map_err(|e| MultiRaftError::operation(e.to_string()))?;
         self.install_durable_snapshot(group, fetched.last_index, fetched.last_term, fetched.data)
             .await
     }
@@ -483,7 +507,7 @@ impl<S: StateMachine> MultiRaft<S> {
         group: u64,
     ) -> Result<RecoverOutcome, MultiRaftError> {
         let base = self.config.daisy_upstream_base.as_ref().ok_or_else(|| {
-            MultiRaftError::Other(anyhow::anyhow!(
+            MultiRaftError::operation(format!(
                 "sync_from_daisy_upstream: daisy_upstream_base not set"
             ))
         })?;
@@ -525,9 +549,9 @@ impl<S: StateMachine> MultiRaft<S> {
                     &snapshot_id,
                     &fetched.data,
                 )
-                .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("daisy catalog write: {e}")))?;
+                .map_err(|e| MultiRaftError::operation(format!("daisy catalog write: {e}")))?;
         } else {
-            return Err(MultiRaftError::Other(anyhow::anyhow!(
+            return Err(MultiRaftError::operation(format!(
                 "sync_from_daisy_upstream: SnapshotCatalog required (StandbyOffload + data_dir)"
             )));
         }
@@ -635,7 +659,7 @@ impl<S: StateMachine> MultiRaft<S> {
             return Ok(());
         }
         if !is_learner {
-            return Err(MultiRaftError::Other(anyhow::anyhow!(
+            return Err(MultiRaftError::operation(format!(
                 "promote_standby: node {node_id} is not a learner in group {group}"
             )));
         }
@@ -666,7 +690,7 @@ impl<S: StateMachine> MultiRaft<S> {
                 if msg.contains("configuration change") {
                     return Err(transient_membership_err("promote_standby change_membership", &e));
                 }
-                Err(MultiRaftError::Other(anyhow::anyhow!(
+                Err(MultiRaftError::operation(format!(
                     "promote_standby change_membership: {e}"
                 )))
             }
@@ -719,7 +743,7 @@ impl<S: StateMachine> MultiRaft<S> {
                         &e,
                     ));
                 }
-                Err(MultiRaftError::Other(anyhow::anyhow!(
+                Err(MultiRaftError::operation(format!(
                     "demote_to_standby change_membership: {e}"
                 )))
             }
@@ -812,7 +836,7 @@ impl<S: StateMachine> MultiRaft<S> {
             .ok_or(MultiRaftError::UnknownGroup(group))?;
         sm.install_durable_snapshot(last_index, last_term, true, data)
             .await
-            .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("install_durable_snapshot: {e}")))
+            .map_err(|e| MultiRaftError::operation(format!("install_durable_snapshot: {e}")))
     }
 
     /// Pull snapshot bytes from a Standby's catalog (in-process helper) and install.
@@ -823,14 +847,14 @@ impl<S: StateMachine> MultiRaft<S> {
     ) -> Result<(), MultiRaftError> {
         let entry = standby_catalog
             .latest(group)
-            .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("catalog latest: {e}")))?
+            .map_err(|e| MultiRaftError::operation(format!("catalog latest: {e}")))?
             .ok_or_else(|| {
-                MultiRaftError::Other(anyhow::anyhow!("no snapshot in standby catalog"))
+                MultiRaftError::operation(format!("no snapshot in standby catalog"))
             })?;
         let data = standby_catalog
             .read(group, &entry.snapshot_id)
-            .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("catalog read: {e}")))?
-            .ok_or_else(|| MultiRaftError::Other(anyhow::anyhow!("snapshot data missing")))?;
+            .map_err(|e| MultiRaftError::operation(format!("catalog read: {e}")))?
+            .ok_or_else(|| MultiRaftError::operation(format!("snapshot data missing")))?;
         self.install_durable_snapshot(group, entry.last_index, entry.last_term, data)
             .await
     }
@@ -847,7 +871,7 @@ impl<S: StateMachine> MultiRaft<S> {
         match raft.initialize(nodes).await {
             Ok(()) => Ok(()),
             Err(RaftError::APIError(InitializeError::NotAllowed(_))) => Ok(()),
-            Err(e) => Err(MultiRaftError::Other(anyhow::anyhow!(
+            Err(e) => Err(MultiRaftError::operation(format!(
                 "initialize group: {e}"
             ))),
         }
@@ -909,11 +933,11 @@ impl<S: StateMachine> MultiRaft<S> {
         let mut stream = raft
             .client_write_many(payloads.into_iter().map(Request::new))
             .await
-            .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("client_write_many: {e}")))?;
+            .map_err(|e| MultiRaftError::operation(format!("client_write_many: {e}")))?;
         let mut out = Vec::with_capacity(n);
         while let Some(item) = futures::StreamExt::next(&mut stream).await {
             let result = item.map_err(|e| {
-                MultiRaftError::Other(anyhow::anyhow!("client_write_many stream: {e}"))
+                MultiRaftError::operation(format!("client_write_many stream: {e}"))
             })?;
             match result {
                 Ok(resp) => out.push(ProposeOk {
@@ -942,7 +966,7 @@ impl<S: StateMachine> MultiRaft<S> {
                         hint: fwd.leader_id,
                     });
                 }
-                Err(MultiRaftError::Other(anyhow::anyhow!("client_write: {e}")))
+                Err(MultiRaftError::operation(format!("client_write: {e}")))
             }
         }
     }
@@ -963,7 +987,7 @@ impl<S: StateMachine> MultiRaft<S> {
 
         match raft.ensure_linearizable(ReadPolicy::ReadIndex).await {
             Ok(_read_log_id) => self.with_fsm(group, f).await.ok_or_else(|| {
-                MultiRaftError::Other(anyhow::anyhow!(
+                MultiRaftError::operation(format!(
                     "read_linearizable: fsm missing for group {group}"
                 ))
             }),
@@ -973,7 +997,7 @@ impl<S: StateMachine> MultiRaft<S> {
                         hint: fwd.leader_id,
                     });
                 }
-                Err(MultiRaftError::Other(anyhow::anyhow!(
+                Err(MultiRaftError::operation(format!(
                     "ensure_linearizable: {e}"
                 )))
             }
@@ -1048,7 +1072,7 @@ impl<S: StateMachine> MultiRaft<S> {
         for raft in rafts {
             raft.shutdown()
                 .await
-                .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("shutdown: {e}")))?;
+                .map_err(|e| MultiRaftError::operation(format!("shutdown: {e}")))?;
         }
         self.groups.lock().unwrap().clear();
         if let NetBackend::InProcess { router, .. } = &self.net {
@@ -1069,7 +1093,7 @@ impl<S: StateMachine> MultiRaft<S> {
             .ok_or(MultiRaftError::UnknownGroup(group))?;
         raft.wait_for_recovery(Some(timeout))
             .await
-            .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("wait_for_recovery: {e}")))?;
+            .map_err(|e| MultiRaftError::operation(format!("wait_for_recovery: {e}")))?;
         Ok(())
     }
 
@@ -1181,7 +1205,7 @@ impl<S: StateMachine> MultiRaft<S> {
         let config = Arc::new(
             config
                 .validate()
-                .map_err(|e| MultiRaftError::Other(anyhow::anyhow!(e.to_string())))?,
+                .map_err(|e| MultiRaftError::operation(e.to_string()))?,
         );
 
         let fsm = (self.make_fsm)(group);
@@ -1193,7 +1217,7 @@ impl<S: StateMachine> MultiRaft<S> {
             && self.config.snapshot_mode == SnapshotMode::StandbyOffload
         {
             let catalog = self.snapshot_rt.catalog.clone().ok_or_else(|| {
-                MultiRaftError::Other(anyhow::anyhow!(
+                MultiRaftError::operation(format!(
                     "StandbyOffload Standby requires non-empty data_dir for SnapshotCatalog"
                 ))
             })?;
@@ -1282,7 +1306,7 @@ impl<S: StateMachine> MultiRaft<S> {
                             hold_overlap: self.config.file_log_hold_overlap,
                         },
                     )
-                    .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("open file log: {e}")))?;
+                    .map_err(|e| MultiRaftError::operation(format!("open file log: {e}")))?;
                     openraft::Raft::new(
                         self.node_id,
                         config,
@@ -1317,7 +1341,7 @@ impl<S: StateMachine> MultiRaft<S> {
                             hold_overlap: self.config.file_log_hold_overlap,
                         },
                     )
-                    .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("open file log: {e}")))?;
+                    .map_err(|e| MultiRaftError::operation(format!("open file log: {e}")))?;
                     openraft::Raft::new(
                         self.node_id,
                         config,
@@ -1329,7 +1353,7 @@ impl<S: StateMachine> MultiRaft<S> {
                 }
             }
         }
-        .map_err(|e| MultiRaftError::Other(anyhow::anyhow!(e.to_string())))?;
+        .map_err(|e| MultiRaftError::operation(e.to_string()))?;
 
         {
             let mut g = self.groups.lock().unwrap();
@@ -1414,8 +1438,8 @@ impl<S: StateMachine> MultiRaft<S> {
 }
 
 /// Wait until any handle reports a leader for `group` (test helper).
-pub async fn wait_for_leader(
-    nodes: &[MultiRaft],
+pub async fn wait_for_leader<S: StateMachine>(
+    nodes: &[MultiRaft<S>],
     group: GroupId,
     timeout: Duration,
 ) -> Option<NodeId> {
@@ -1478,7 +1502,7 @@ async fn daisy_sync_once<S: StateMachine>(
         .clone()
         .unwrap_or_else(|| format!("{}-{}", fetched.last_index, fetched.last_term));
     let catalog = snapshot_rt.catalog.as_ref().ok_or_else(|| {
-        MultiRaftError::Other(anyhow::anyhow!(
+        MultiRaftError::operation(format!(
             "daisy sync: SnapshotCatalog required (StandbyOffload + data_dir)"
         ))
     })?;
@@ -1490,7 +1514,7 @@ async fn daisy_sync_once<S: StateMachine>(
             &snapshot_id,
             &fetched.data,
         )
-        .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("daisy catalog write: {e}")))?;
+        .map_err(|e| MultiRaftError::operation(format!("daisy catalog write: {e}")))?;
 
     if let Some(sm) = sm {
         sm.install_durable_snapshot(
@@ -1500,7 +1524,7 @@ async fn daisy_sync_once<S: StateMachine>(
             fetched.data.clone(),
         )
         .await
-        .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("daisy install: {e}")))?;
+        .map_err(|e| MultiRaftError::operation(format!("daisy install: {e}")))?;
     }
 
     let fetch_url = admin
@@ -1525,13 +1549,13 @@ const MEMBERSHIP_RETRY_TIMEOUT: Duration = Duration::from_secs(15);
 const MEMBERSHIP_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
 fn transient_membership_err(label: &str, e: &impl std::fmt::Display) -> MultiRaftError {
-    MultiRaftError::Other(anyhow::anyhow!(
+    MultiRaftError::operation(format!(
         "{label}: {e} (retry after membership settles)"
     ))
 }
 
 fn membership_err_retryable(err: &MultiRaftError) -> bool {
-    matches!(err, MultiRaftError::Other(e) if e.to_string().contains("configuration change"))
+    matches!(err, MultiRaftError::Operation(e) if e.contains("configuration change"))
 }
 
 async fn retry_on_membership_pending<F, Fut>(mut op: F) -> Result<(), MultiRaftError>

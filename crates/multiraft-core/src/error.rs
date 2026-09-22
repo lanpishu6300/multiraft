@@ -20,8 +20,21 @@ pub enum MultiRaftError {
     #[error("in-process router is only available for MultiRaft::start / start_cluster")]
     InProcessRouterUnavailable,
 
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
+    #[error("{0}")]
+    InvalidArgument(String),
+
+    #[error("{0}")]
+    Operation(String),
+}
+
+impl MultiRaftError {
+    pub fn invalid_arg(msg: impl Into<String>) -> Self {
+        Self::InvalidArgument(msg.into())
+    }
+
+    pub fn operation(msg: impl Into<String>) -> Self {
+        Self::Operation(msg.into())
+    }
 }
 
 /// Successful propose: log index and term after quorum commit + apply
@@ -54,8 +67,11 @@ mod tests {
         assert!(MultiRaftError::StaleQueriesDisabled
             .to_string()
             .contains("stale"));
-        let other: MultiRaftError = anyhow::anyhow!("boom").into();
-        assert!(other.to_string().contains("boom"));
+        let arg = MultiRaftError::invalid_arg("at least one member");
+        assert!(arg.to_string().contains("at least one member"));
+        matches!(arg, MultiRaftError::InvalidArgument(_));
+        let op = MultiRaftError::operation("boom");
+        assert!(op.to_string().contains("boom"));
         let backend = MultiRaftError::InProcessRouterUnavailable;
         assert!(backend.to_string().contains("in-process"));
         let _ = format!("{:?}", ProposeOk { index: 1, term: 1 });

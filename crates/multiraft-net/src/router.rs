@@ -4,7 +4,6 @@
 //! same-process IPC. Cross-process gRPC still serializes in [`crate::GrpcRouter`].
 
 use std::collections::BTreeMap;
-use std::fmt;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -31,16 +30,19 @@ use multiraft_core::TypeConfig;
 pub type NodeTx = mpsc::Sender<NodeMessage>;
 pub type NodeRx = mpsc::Receiver<NodeMessage>;
 
-#[derive(Debug)]
-pub struct RouterError(pub String);
-
-impl fmt::Display for RouterError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum RouterError {
+    #[error("node {0} not connected")]
+    NodeNotConnected(NodeId),
+    #[error("node channel closed")]
+    ChannelClosed,
+    #[error("missing group")]
+    MissingGroup,
+    #[error("reply type mismatch")]
+    ReplyMismatch,
+    #[error("{0}")]
+    Other(String),
 }
-
-impl std::error::Error for RouterError {}
 
 /// Typed Raft RPC body for in-process hops (no serialize).
 pub enum RaftCall {
@@ -73,6 +75,7 @@ pub struct NodeMessage {
 
 /// Multi-Raft router: one channel per node, shared by all groups on that node.
 #[derive(Clone, Default)]
+#[derive(Debug)]
 pub struct Router {
     pub nodes: Arc<Mutex<BTreeMap<NodeId, NodeTx>>>,
     metrics: ConnMetrics,
@@ -122,9 +125,7 @@ impl Router {
             let nodes = self.nodes.lock().unwrap();
             nodes
                 .get(&to_node)
-                .ok_or_else(|| {
-                    Unreachable::new(&RouterError(format!("node {} not connected", to_node)))
-                })?
+                .ok_or_else(|| Unreachable::new(&RouterError::NodeNotConnected(to_node)))?
                 .clone()
         };
 
@@ -137,15 +138,15 @@ impl Router {
             if e.is_full() {
                 tx.send(e.into_inner())
                     .await
-                    .map_err(|e| Unreachable::new(&RouterError(e.to_string())))?;
+                    .map_err(|e| Unreachable::new(&RouterError::Other(e.to_string())))?;
             } else {
-                return Err(Unreachable::new(&RouterError("node channel closed".into())));
+                return Err(Unreachable::new(&RouterError::ChannelClosed));
             }
         }
 
         resp_rx
             .await
-            .map_err(|e| Unreachable::new(&RouterError(e.to_string())))
+            .map_err(|e| Unreachable::new(&RouterError::Other(e.to_string())))
     }
 
     pub async fn send_vote(
@@ -159,9 +160,9 @@ impl Router {
             .await?
         {
             RaftReply::Vote(Ok(r)) => Ok(r),
-            RaftReply::Vote(Err(e)) => Err(Unreachable::new(&RouterError(e.to_string()))),
-            RaftReply::MissingGroup => Err(Unreachable::new(&RouterError("missing group".into()))),
-            _ => Err(Unreachable::new(&RouterError("reply type mismatch".into()))),
+            RaftReply::Vote(Err(e)) => Err(Unreachable::new(&RouterError::Other(e.to_string()))),
+            RaftReply::MissingGroup => Err(Unreachable::new(&RouterError::MissingGroup)),
+            _ => Err(Unreachable::new(&RouterError::ReplyMismatch)),
         }
     }
 
@@ -176,9 +177,9 @@ impl Router {
             .await?
         {
             RaftReply::Append(Ok(r)) => Ok(r),
-            RaftReply::Append(Err(e)) => Err(Unreachable::new(&RouterError(e.to_string()))),
-            RaftReply::MissingGroup => Err(Unreachable::new(&RouterError("missing group".into()))),
-            _ => Err(Unreachable::new(&RouterError("reply type mismatch".into()))),
+            RaftReply::Append(Err(e)) => Err(Unreachable::new(&RouterError::Other(e.to_string()))),
+            RaftReply::MissingGroup => Err(Unreachable::new(&RouterError::MissingGroup)),
+            _ => Err(Unreachable::new(&RouterError::ReplyMismatch)),
         }
     }
 
@@ -195,9 +196,9 @@ impl Router {
             .await?
         {
             RaftReply::Snapshot(Ok(r)) => Ok(r),
-            RaftReply::Snapshot(Err(e)) => Err(Unreachable::new(&RouterError(e.to_string()))),
-            RaftReply::MissingGroup => Err(Unreachable::new(&RouterError("missing group".into()))),
-            _ => Err(Unreachable::new(&RouterError("reply type mismatch".into()))),
+            RaftReply::Snapshot(Err(e)) => Err(Unreachable::new(&RouterError::Other(e.to_string()))),
+            RaftReply::MissingGroup => Err(Unreachable::new(&RouterError::MissingGroup)),
+            _ => Err(Unreachable::new(&RouterError::ReplyMismatch)),
         }
     }
 
@@ -212,9 +213,9 @@ impl Router {
             .await?
         {
             RaftReply::Transfer(Ok(r)) => Ok(r),
-            RaftReply::Transfer(Err(e)) => Err(Unreachable::new(&RouterError(e.to_string()))),
-            RaftReply::MissingGroup => Err(Unreachable::new(&RouterError("missing group".into()))),
-            _ => Err(Unreachable::new(&RouterError("reply type mismatch".into()))),
+            RaftReply::Transfer(Err(e)) => Err(Unreachable::new(&RouterError::Other(e.to_string()))),
+            RaftReply::MissingGroup => Err(Unreachable::new(&RouterError::MissingGroup)),
+            _ => Err(Unreachable::new(&RouterError::ReplyMismatch)),
         }
     }
 
